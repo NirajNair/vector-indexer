@@ -1,5 +1,5 @@
-use vector_indexer::kmeans::kmeans::run_kmeans_parallel;
-use ndarray::{Array2, ArrayView1};
+use ndarray::{Array1, Array2, ArrayView1};
+use vector_indexer::kmeans::run_kmeans_parallel;
 
 // ============================================================================
 // Core Functionality Tests
@@ -11,7 +11,7 @@ fn test_basic_kmeans_runs_without_panic() {
     let data = Array2::from_shape_vec((10, 3), (0..30).map(|x| x as f32).collect()).unwrap();
     let k = 3;
 
-    let (centroids, labels) = run_kmeans_parallel(&data, k, 100, None);
+    let (centroids, labels) = run_kmeans_parallel(&data, k, 100, None).expect("K-means failed");
 
     assert_eq!(centroids.nrows(), k);
     assert_eq!(centroids.ncols(), 3);
@@ -24,7 +24,7 @@ fn test_all_labels_are_valid() {
     let data = Array2::from_shape_vec((20, 4), (0..80).map(|x| x as f32 * 0.1).collect()).unwrap();
     let k = 5;
 
-    let (_centroids, labels) = run_kmeans_parallel(&data, k, 50, None);
+    let (_centroids, labels) = run_kmeans_parallel(&data, k, 50, None).expect("K-means failed");
 
     for &label in &labels {
         assert!(label < k, "Label {} is out of bounds for k={}", label, k);
@@ -36,7 +36,8 @@ fn test_labels_assignment_is_optimal() {
     // Correctness: After convergence, each point should be assigned to its nearest centroid
     let (data, _true_labels) = create_gaussian_clusters(3, 20, 4, 10.0);
 
-    let (centroids, labels) = run_kmeans_parallel(&data, 3, 100, Some(1e-6));
+    let (centroids, labels) =
+        run_kmeans_parallel(&data, 3, 100, Some(1e-6)).expect("K-means failed");
 
     assert!(
         verify_optimal_assignment(&data, &centroids, &labels),
@@ -55,7 +56,7 @@ fn test_single_cluster() {
     let data = Array2::from_shape_vec((20, 3), (0..60).map(|x| x as f32).collect()).unwrap();
     let k = 1;
 
-    let (centroids, labels) = run_kmeans_parallel(&data, k, 50, None);
+    let (centroids, labels) = run_kmeans_parallel(&data, k, 50, None).expect("K-means failed");
 
     assert_eq!(centroids.nrows(), 1);
     assert!(
@@ -79,7 +80,7 @@ fn test_k_equals_n() {
     let data = Array2::from_shape_vec((10, 3), (0..30).map(|x| x as f32 * 2.0).collect()).unwrap();
     let k = 10;
 
-    let (centroids, labels) = run_kmeans_parallel(&data, k, 100, None);
+    let (centroids, labels) = run_kmeans_parallel(&data, k, 100, None).expect("K-means failed");
 
     assert_eq!(centroids.nrows(), k);
     assert_eq!(labels.len(), 10);
@@ -101,7 +102,7 @@ fn test_high_dimensional_data() {
     .unwrap();
     let k = 10;
 
-    let (centroids, labels) = run_kmeans_parallel(&data, k, 50, None);
+    let (centroids, labels) = run_kmeans_parallel(&data, k, 50, None).expect("K-means failed");
 
     assert_eq!(centroids.nrows(), k);
     assert_eq!(centroids.ncols(), dim);
@@ -119,11 +120,13 @@ fn test_convergence_improves_clustering() {
     let (data, _) = create_gaussian_clusters(3, 30, 5, 15.0);
 
     // Run with few iterations
-    let (centroids_few, labels_few) = run_kmeans_parallel(&data, 3, 5, None);
+    let (centroids_few, labels_few) =
+        run_kmeans_parallel(&data, 3, 5, None).expect("K-means failed");
     let inertia_few = calculate_inertia(&data, &centroids_few, &labels_few);
 
     // Run with many iterations
-    let (centroids_many, labels_many) = run_kmeans_parallel(&data, 3, 100, Some(1e-6));
+    let (centroids_many, labels_many) =
+        run_kmeans_parallel(&data, 3, 100, Some(1e-6)).expect("K-means failed");
     let inertia_many = calculate_inertia(&data, &centroids_many, &labels_many);
 
     // More iterations should lead to lower or equal inertia
@@ -144,7 +147,8 @@ fn test_well_separated_clusters_are_recovered() {
     // Integration: Create 3 well-separated clusters and verify K-means recovers them
     let (data, true_labels) = create_gaussian_clusters(3, 40, 4, 25.0);
 
-    let (centroids, predicted_labels) = run_kmeans_parallel(&data, 3, 100, Some(1e-5));
+    let (centroids, predicted_labels) =
+        run_kmeans_parallel(&data, 3, 100, Some(1e-5)).expect("K-means failed");
 
     // We can't directly compare labels (they might be permuted)
     // Instead, check that points from the same true cluster are assigned to the same predicted cluster
@@ -196,7 +200,8 @@ fn test_identical_points_handled_correctly() {
     let data = Array2::from_shape_vec((5, 3), data_vec).unwrap();
     let k = 2;
 
-    let (centroids, labels) = run_kmeans_parallel(&data, k, 100, Some(1e-5));
+    let (centroids, labels) =
+        run_kmeans_parallel(&data, k, 100, Some(1e-5)).expect("K-means failed");
 
     assert_eq!(centroids.nrows(), k);
     assert_eq!(labels.len(), 5);
@@ -229,7 +234,8 @@ fn test_large_dataset() {
     )
     .unwrap();
 
-    let (centroids, labels) = run_kmeans_parallel(&data, k, 50, Some(1e-4));
+    let (centroids, labels) =
+        run_kmeans_parallel(&data, k, 50, Some(1e-4)).expect("K-means failed");
 
     assert_eq!(centroids.nrows(), k);
     assert_eq!(centroids.ncols(), dim);
@@ -254,7 +260,7 @@ fn euclidean_distance(a: ArrayView1<f32>, b: ArrayView1<f32>) -> f32 {
 
 /// Calculate the within-cluster sum of squares (inertia)
 /// This is a standard metric to evaluate clustering quality
-fn calculate_inertia(data: &Array2<f32>, centroids: &Array2<f32>, labels: &[usize]) -> f32 {
+fn calculate_inertia(data: &Array2<f32>, centroids: &Array2<f32>, labels: &Array1<usize>) -> f32 {
     let mut inertia = 0.0;
     for (i, &label) in labels.iter().enumerate() {
         let point = data.row(i);
@@ -268,7 +274,7 @@ fn calculate_inertia(data: &Array2<f32>, centroids: &Array2<f32>, labels: &[usiz
 fn verify_optimal_assignment(
     data: &Array2<f32>,
     centroids: &Array2<f32>,
-    labels: &[usize],
+    labels: &Array1<usize>,
 ) -> bool {
     for (i, &assigned_label) in labels.iter().enumerate() {
         let point = data.row(i);

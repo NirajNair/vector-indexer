@@ -1,7 +1,12 @@
+use ndarray::Array1;
 use ndarray::Array2;
+use rand::distributions::WeightedIndex;
+use rand::prelude::*;
 use rand::thread_rng;
 use rand::Rng;
 use rayon::prelude::*;
+use std::io::{Error, ErrorKind};
+use std::vec;
 use wide::f32x8;
 
 /// Runs parallel + SIMD optimized K-Means++ clustering with early stopping.
@@ -10,23 +15,29 @@ pub fn run_kmeans_parallel(
     k: usize,                          // number of clusters
     max_iters: usize,                  // maximum iterations
     early_stop_threshold: Option<f32>, // early stop threshold
-) -> (Array2<f32>, Vec<usize>) {
+) -> Result<(Array2<f32>, Array1<usize>), Error> {
     let early_stop_threshold = early_stop_threshold.unwrap_or(1e-4);
+    if data.is_empty() {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "Input vectors cannot be empty",
+        ));
+    }
     let n = data.nrows();
     let dim = data.ncols();
     let mut rng = thread_rng();
 
-    let mut curr_centroids = kmeans_plus_plus_init(data, k);
+    let mut curr_centroids = kmeans_plus_plus_init(&data, k);
     let mut labels = vec![0usize; n];
 
     for iter in 0..max_iters {
         println!("Iteration {iter}...");
 
         // Assignment (parallel + SIMD)
-        assign_points_simd_parallel(data, &curr_centroids, &mut labels);
+        assign_points_simd_parallel(&data, &curr_centroids, &mut labels);
 
         // Update (parallel reduction)
-        let (mut new_centroids, counts) = update_centroids_parallel(data, &labels, k, dim);
+        let (mut new_centroids, counts) = update_centroids_parallel(&data, &labels, k, dim);
 
         // Handle empty clusters
         for c in 0..k {
@@ -57,11 +68,8 @@ pub fn run_kmeans_parallel(
         }
     }
 
-    (curr_centroids, labels)
+    Ok((curr_centroids, Array1::from_vec(labels)))
 }
-
-use rand::distributions::WeightedIndex;
-use rand::prelude::*;
 
 /// K-means++ initialization: smart centroid selection
 /// Centroids are chosen with probability proportional to distance^2 from existing centroids
