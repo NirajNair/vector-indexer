@@ -1,17 +1,17 @@
 # vector_indexer
 
-A high-performance vector indexing engine written in Rust. It implements an **Inverted File (IVF)** index with **parallel K-Means clustering** and **SIMD-optimized distance computation**.
+A high-performance vector indexing engine written in Rust. Implements an **Inverted File (IVF)** index with **two-level clustering**, **memory-mapped storage**, and **SIMD-optimized distance computation**.
 
-The library is designed as a lightweight, standalone component for building and experimenting with **approximate nearest neighbor (ANN)** search algorithms. It can serve as the computational core for larger retrieval systems or as a research tool for understanding and benchmarking vector indexing techniques.
+Designed as a lightweight, standalone component for building and experimenting with **approximate nearest neighbor (ANN)** search algorithms which can serve as the computational core for retrieval systems.
 
 ---
 
 ## Key Features
 
-- **Parallel K-Means clustering** using [Rayon] for multicore scalability.
-- **SIMD-accelerated distance calculations** using Rust’s `wide` crate.
-- **Early convergence detection** for faster and stable training.
-- **Modular architecture** to support future extensions (e.g., PQ, WAL, or memory-mapped storage).
-- **Benchmark-ready design** for evaluating IVF performance across datasets.
+- **Two-level clustering architecture** — IVF clusters organized into shards via super-centroids for scalable distribution
+- **Mini-batch K-Means** with early convergence detection and parallel execution using Rayon
+- **Memory-mapped I/O** for efficient disk access with zero-copy deserialization
+- **Custom binary storage format** with structured headers, indices, and cluster blocks
+- **SIMD-accelerated distance calculations** using the `wide` crate
 
 ---
