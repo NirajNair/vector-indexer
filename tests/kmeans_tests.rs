@@ -1,5 +1,5 @@
 use ndarray::{Array1, Array2, ArrayView1};
-use vector_indexer::kmeans::run_kmeans_parallel;
+use vector_indexer::kmeans::{run_kmeans_mini_batch, run_kmeans_parallel};
 
 // ============================================================================
 // Core Functionality Tests
@@ -243,6 +243,210 @@ fn test_large_dataset() {
 
     // Verify optimal assignment (might be slow, but ensures correctness)
     assert!(verify_optimal_assignment(&data, &centroids, &labels));
+}
+
+// ============================================================================
+// Mini-batch K-means Tests
+// ============================================================================
+
+#[test]
+fn test_mini_batch_kmeans_basic() {
+    // Basic test: Mini-batch K-means completes successfully on simple data
+    let data = Array2::from_shape_vec((100, 3), (0..300).map(|x| x as f32).collect()).unwrap();
+    let k = 3;
+
+    let (centroids, labels) =
+        run_kmeans_mini_batch(&data, k, 100, None).expect("Mini-batch K-means failed");
+
+    assert_eq!(centroids.nrows(), k);
+    assert_eq!(centroids.ncols(), 3);
+    assert_eq!(labels.len(), 100);
+}
+
+#[test]
+fn test_mini_batch_kmeans_labels_valid() {
+    // Verify all labels are in valid range
+    let data = Array2::from_shape_vec((50, 4), (0..200).map(|x| x as f32 * 0.1).collect()).unwrap();
+    let k = 5;
+
+    let (_centroids, labels) =
+        run_kmeans_mini_batch(&data, k, 50, None).expect("Mini-batch K-means failed");
+
+    for &label in &labels {
+        assert!(label < k, "Label {} is out of bounds for k={}", label, k);
+    }
+}
+
+#[test]
+fn test_mini_batch_kmeans_optimal_assignment() {
+    // After final assignment, all points should be assigned to nearest centroid
+    let (data, _true_labels) = create_gaussian_clusters(3, 40, 4, 25.0);
+
+    let (centroids, labels) =
+        run_kmeans_mini_batch(&data, 3, 100, Some(1e-5)).expect("Mini-batch K-means failed");
+
+    assert!(
+        verify_optimal_assignment(&data, &centroids, &labels),
+        "Not all points are assigned to their nearest centroid"
+    );
+}
+
+#[test]
+fn test_mini_batch_kmeans_separated_clusters() {
+    // Integration test: Well-separated clusters should be recovered
+    let (data, _true_labels) = create_gaussian_clusters(3, 50, 4, 30.0);
+
+    let (centroids, labels) =
+        run_kmeans_mini_batch(&data, 3, 100, Some(1e-4)).expect("Mini-batch K-means failed");
+
+    // Verify optimal assignment
+    assert!(verify_optimal_assignment(&data, &centroids, &labels));
+
+    // Verify reasonable inertia
+    let inertia = calculate_inertia(&data, &centroids, &labels);
+    let avg_inertia_per_point = inertia / data.nrows() as f32;
+
+    assert!(
+        avg_inertia_per_point < 2.5,
+        "Inertia too high for well-separated clusters: {}",
+        avg_inertia_per_point
+    );
+}
+
+#[test]
+fn test_mini_batch_kmeans_large_dataset() {
+    // Scalability: Mini-batch should handle large datasets efficiently
+    let n = 1000;
+    let dim = 32;
+    let k = 15;
+
+    let data = Array2::from_shape_vec(
+        (n, dim),
+        (0..n * dim).map(|x| (x as f32 * 0.1) % 50.0).collect(),
+    )
+    .unwrap();
+
+    let (centroids, labels) =
+        run_kmeans_mini_batch(&data, k, 50, Some(1e-4)).expect("Mini-batch K-means failed");
+
+    assert_eq!(centroids.nrows(), k);
+    assert_eq!(centroids.ncols(), dim);
+    assert_eq!(labels.len(), n);
+
+    // Verify optimal assignment
+    assert!(verify_optimal_assignment(&data, &centroids, &labels));
+}
+
+#[test]
+fn test_mini_batch_vs_full_batch_quality() {
+    // Compare mini-batch and full-batch K-means results on the same data
+    let (data, _) = create_gaussian_clusters(4, 50, 8, 20.0);
+    let k = 4;
+
+    // Run both algorithms
+    let (centroids_full, labels_full) =
+        run_kmeans_parallel(&data, k, 100, Some(1e-5)).expect("Full-batch K-means failed");
+    let (centroids_mini, labels_mini) =
+        run_kmeans_mini_batch(&data, k, 100, Some(1e-5)).expect("Mini-batch K-means failed");
+
+    // Calculate inertia for both
+    let inertia_full = calculate_inertia(&data, &centroids_full, &labels_full);
+    let inertia_mini = calculate_inertia(&data, &centroids_mini, &labels_mini);
+
+    println!("Full-batch inertia: {:.4}", inertia_full);
+    println!("Mini-batch inertia: {:.4}", inertia_mini);
+
+    // Mini-batch should produce reasonable results (within 50% of full-batch)
+    // This is a lenient check since mini-batch is approximate
+    assert!(
+        inertia_mini < inertia_full * 1.5,
+        "Mini-batch inertia ({}) is too much worse than full-batch ({})",
+        inertia_mini,
+        inertia_full
+    );
+
+    // Both should have optimal final assignment
+    assert!(verify_optimal_assignment(
+        &data,
+        &centroids_full,
+        &labels_full
+    ));
+    assert!(verify_optimal_assignment(
+        &data,
+        &centroids_mini,
+        &labels_mini
+    ));
+}
+
+#[test]
+fn test_mini_batch_kmeans_small_dataset() {
+    // Edge case: Mini-batch should work even when dataset is smaller than typical batch size
+    let data = Array2::from_shape_vec((20, 3), (0..60).map(|x| x as f32 * 0.5).collect()).unwrap();
+    let k = 3;
+
+    let (centroids, labels) = run_kmeans_mini_batch(&data, k, 50, None)
+        .expect("Mini-batch K-means failed on small dataset");
+
+    assert_eq!(centroids.nrows(), k);
+    assert_eq!(labels.len(), 20);
+    assert!(verify_optimal_assignment(&data, &centroids, &labels));
+}
+
+// ============================================================================
+// Hierarchical Assignment Tests (for large k)
+// ============================================================================
+
+#[test]
+fn test_mini_batch_kmeans_large_k() {
+    // Test with k > 100 to trigger hierarchical assignment
+    let n = 5000;
+    let dim = 32;
+    let k = 200; // Large k to trigger hierarchical assignment
+
+    let data = Array2::from_shape_vec(
+        (n, dim),
+        (0..n * dim).map(|x| (x as f32 * 0.1) % 50.0).collect(),
+    )
+    .unwrap();
+
+    let (centroids, labels) = run_kmeans_mini_batch(&data, k, 30, Some(1e-4))
+        .expect("Mini-batch K-means failed with large k");
+
+    assert_eq!(centroids.nrows(), k);
+    assert_eq!(centroids.ncols(), dim);
+    assert_eq!(labels.len(), n);
+
+    // Verify optimal assignment (hierarchical should still be accurate)
+    assert!(verify_optimal_assignment(&data, &centroids, &labels));
+}
+
+#[test]
+fn test_hierarchical_vs_brute_force_quality() {
+    // Compare results with k slightly above and below the threshold
+    let (data, _) = create_gaussian_clusters(5, 50, 8, 20.0);
+    let k = 25; // Will use brute force
+
+    let (centroids, labels_brute) =
+        run_kmeans_mini_batch(&data, k, 50, Some(1e-5)).expect("Brute force failed");
+
+    // Both should produce valid optimal assignments
+    assert!(verify_optimal_assignment(&data, &centroids, &labels_brute));
+
+    // Test with larger k (will use hierarchical)
+    let k_large = 150;
+
+    // Create larger dataset for larger k
+    let (data_large, _) = create_gaussian_clusters(10, 100, 8, 25.0);
+
+    let (centroids_hier, labels_hier) =
+        run_kmeans_mini_batch(&data_large, k_large, 50, Some(1e-4)).expect("Hierarchical failed");
+
+    assert_eq!(centroids_hier.nrows(), k_large);
+    assert!(verify_optimal_assignment(
+        &data_large,
+        &centroids_hier,
+        &labels_hier
+    ));
 }
 
 // ============================================================================

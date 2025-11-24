@@ -1,4 +1,4 @@
-use crate::kmeans::run_kmeans_parallel;
+use crate::kmeans::run_kmeans_mini_batch;
 use crate::shards::Shard;
 use ndarray::{Array1, Array2, Axis};
 use serde::{Deserialize, Serialize};
@@ -72,7 +72,7 @@ impl IvfIndex {
         // Run kmeans to find super centroids to group similar centroids together
         let num_shards = (centroids.len() as f32).sqrt().ceil() as usize;
         let (super_centroids, super_centroid_labels) =
-            run_kmeans_parallel(centroids_arr, num_shards, 100, None)
+            run_kmeans_mini_batch(centroids_arr, num_shards, 100, None)
                 .expect("Failed to run kmeans");
 
         println!(
