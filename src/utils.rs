@@ -24,6 +24,10 @@ pub fn calculate_max_iterations(num_vectors: usize) -> usize {
     max_iterations
 }
 
+pub fn euclidean_distance_squared(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b.iter()).map(|(x, y)| (x - y).powi(2)).sum()
+}
+
 /// Generate test vectors and save them to a file
 /// Each vector is a tuple of (id: u64, vector: Vec<f32>, metadata: u64)
 pub fn generate_test_vectors_parallel(filename: &str, count: usize, dimension: usize) {

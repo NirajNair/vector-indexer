@@ -55,7 +55,7 @@ impl Shard {
         }
     }
 
-    pub fn write_shard_to_disk(&self) -> Result<()> {
+    pub fn save(&self) -> Result<()> {
         fs::create_dir_all("shards")?;
         let mut file = File::create(format!("shards/shard_{}.bin", self.id))?;
 
