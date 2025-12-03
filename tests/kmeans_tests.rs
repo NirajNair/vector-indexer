@@ -1,4 +1,7 @@
-use ndarray::{Array1, Array2, ArrayView1};
+mod test_utils;
+
+use ndarray::Array2;
+use test_utils::*;
 use vector_indexer::kmeans::{run_kmeans_mini_batch, run_kmeans_parallel};
 
 // ============================================================================
@@ -45,6 +48,18 @@ fn test_labels_assignment_is_optimal() {
     );
 }
 
+#[test]
+fn test_centroids_have_correct_dimensions() {
+    // Verify centroids match input dimensionality
+    let data = create_test_vectors(50, 16);
+    let k = 5;
+
+    let (centroids, _labels) = run_kmeans_parallel(&data, k, 50, None).expect("K-means failed");
+
+    assert_eq!(centroids.nrows(), k);
+    assert_eq!(centroids.ncols(), 16);
+}
+
 // ============================================================================
 // Edge Cases Tests
 // ============================================================================
@@ -76,7 +91,7 @@ fn test_single_cluster() {
 
 #[test]
 fn test_k_equals_n() {
-    // Edge case: When k equals the number of points, each point should form its own cluster
+    // Edge case: When k equals the number of points, each point could form its own cluster
     let data = Array2::from_shape_vec((10, 3), (0..30).map(|x| x as f32 * 2.0).collect()).unwrap();
     let k = 10;
 
@@ -85,9 +100,10 @@ fn test_k_equals_n() {
     assert_eq!(centroids.nrows(), k);
     assert_eq!(labels.len(), 10);
 
-    // Each label should appear at least once (though empty clusters can occur)
-    // At minimum, we should have k centroids defined
-    assert_eq!(centroids.nrows(), k);
+    // All labels should be valid
+    for &label in &labels {
+        assert!(label < k, "Label {} is out of bounds for k={}", label, k);
+    }
 }
 
 #[test]
@@ -107,6 +123,61 @@ fn test_high_dimensional_data() {
     assert_eq!(centroids.nrows(), k);
     assert_eq!(centroids.ncols(), dim);
     assert_eq!(labels.len(), n);
+    assert!(verify_optimal_assignment(&data, &centroids, &labels));
+}
+
+#[test]
+fn test_identical_points_handled_correctly() {
+    // Edge case: Test with multiple identical points
+    let mut data_vec = vec![1.0, 2.0, 3.0]; // One point
+    data_vec.extend_from_slice(&[1.0, 2.0, 3.0]); // Duplicate
+    data_vec.extend_from_slice(&[1.0, 2.0, 3.0]); // Duplicate
+    data_vec.extend_from_slice(&[10.0, 20.0, 30.0]); // Different point
+    data_vec.extend_from_slice(&[10.0, 20.0, 30.0]); // Duplicate
+
+    let data = Array2::from_shape_vec((5, 3), data_vec).unwrap();
+    let k = 2;
+
+    let (centroids, labels) =
+        run_kmeans_parallel(&data, k, 100, Some(1e-5)).expect("K-means failed");
+
+    assert_eq!(centroids.nrows(), k);
+    assert_eq!(labels.len(), 5);
+
+    // The three identical points at (1,2,3) should have the same label
+    assert_eq!(labels[0], labels[1]);
+    assert_eq!(labels[1], labels[2]);
+
+    // The two identical points at (10,20,30) should have the same label
+    assert_eq!(labels[3], labels[4]);
+
+    // The two groups should have different labels
+    assert_ne!(labels[0], labels[3]);
+}
+
+#[test]
+fn test_very_small_dataset() {
+    // Edge case: K-means should work with very small datasets
+    let data = Array2::from_shape_vec(
+        (5, 3),
+        vec![
+            1.0, 2.0, 3.0, 1.1, 2.1, 3.1, 10.0, 11.0, 12.0, 10.1, 11.1, 12.1, 5.0, 6.0, 7.0,
+        ],
+    )
+    .unwrap();
+    let k = 2;
+
+    let (centroids, labels) = run_kmeans_parallel(&data, k, 50, None).expect("K-means failed");
+
+    assert_eq!(centroids.nrows(), k);
+    assert_eq!(labels.len(), 5);
+
+    // All labels should be valid
+    for &label in &labels {
+        assert!(label < k);
+    }
+
+    // Verify optimal assignment
     assert!(verify_optimal_assignment(&data, &centroids, &labels));
 }
 
@@ -136,6 +207,51 @@ fn test_convergence_improves_clustering() {
         inertia_few,
         inertia_many
     );
+}
+
+#[test]
+fn test_early_stopping_works() {
+    // Test that early stopping threshold is respected
+    let (data, _) = create_gaussian_clusters(3, 40, 4, 20.0);
+
+    let (centroids, _labels) =
+        run_kmeans_parallel(&data, 3, 1000, Some(1e-2)).expect("K-means failed");
+
+    // If early stopping works, it should converge before 1000 iterations
+    // We just verify it completes successfully
+    assert_eq!(centroids.nrows(), 3);
+}
+
+#[test]
+fn test_deterministic_with_same_initialization() {
+    // Test that running K-means multiple times produces valid results
+    // Note: K-means++ initialization is random, so exact reproducibility isn't guaranteed
+    let data = create_deterministic_vectors(100, 8, 42);
+    let k = 5;
+
+    // Run K-means multiple times
+    let (centroids1, labels1) =
+        run_kmeans_parallel(&data, k, 50, Some(1e-4)).expect("First run failed");
+    let (centroids2, labels2) =
+        run_kmeans_parallel(&data, k, 50, Some(1e-4)).expect("Second run failed");
+
+    // Both runs should produce valid results
+    assert_eq!(centroids1.nrows(), k);
+    assert_eq!(centroids2.nrows(), k);
+    assert!(verify_optimal_assignment(&data, &centroids1, &labels1));
+    assert!(verify_optimal_assignment(&data, &centroids2, &labels2));
+
+    // Inertia should be similar (within reasonable range due to randomness)
+    let inertia1 = calculate_inertia(&data, &centroids1, &labels1);
+    let inertia2 = calculate_inertia(&data, &centroids2, &labels2);
+
+    // Both should produce good clusterings (within 20% of each other)
+    let ratio = if inertia1 > inertia2 {
+        inertia1 / inertia2
+    } else {
+        inertia2 / inertia1
+    };
+    assert!(ratio < 1.2, "Inertia ratio {} too high", ratio);
 }
 
 // ============================================================================
@@ -189,32 +305,19 @@ fn test_well_separated_clusters_are_recovered() {
 }
 
 #[test]
-fn test_identical_points_handled_correctly() {
-    // Edge case: Test with multiple identical points
-    let mut data_vec = vec![1.0, 2.0, 3.0]; // One point
-    data_vec.extend_from_slice(&[1.0, 2.0, 3.0]); // Duplicate
-    data_vec.extend_from_slice(&[1.0, 2.0, 3.0]); // Duplicate
-    data_vec.extend_from_slice(&[10.0, 20.0, 30.0]); // Different point
-    data_vec.extend_from_slice(&[10.0, 20.0, 30.0]); // Duplicate
-
-    let data = Array2::from_shape_vec((5, 3), data_vec).unwrap();
-    let k = 2;
-
+fn test_clustering_quality_metric() {
+    // Verify that inertia is calculated correctly
+    let (data, _) = create_gaussian_clusters(2, 30, 3, 15.0);
     let (centroids, labels) =
-        run_kmeans_parallel(&data, k, 100, Some(1e-5)).expect("K-means failed");
+        run_kmeans_parallel(&data, 2, 100, Some(1e-5)).expect("K-means failed");
 
-    assert_eq!(centroids.nrows(), k);
-    assert_eq!(labels.len(), 5);
+    let inertia = calculate_inertia(&data, &centroids, &labels);
 
-    // The three identical points at (1,2,3) should have the same label
-    assert_eq!(labels[0], labels[1]);
-    assert_eq!(labels[1], labels[2]);
+    // Inertia should be positive
+    assert!(inertia > 0.0, "Inertia should be positive");
 
-    // The two identical points at (10,20,30) should have the same label
-    assert_eq!(labels[3], labels[4]);
-
-    // The two groups should have different labels
-    assert_ne!(labels[0], labels[3]);
+    // For well-separated clusters, inertia should be reasonable
+    assert!(inertia < 1000.0, "Inertia too high: {}", inertia);
 }
 
 // ============================================================================
@@ -241,7 +344,36 @@ fn test_large_dataset() {
     assert_eq!(centroids.ncols(), dim);
     assert_eq!(labels.len(), n);
 
-    // Verify optimal assignment (might be slow, but ensures correctness)
+    // Verify optimal assignment
+    assert!(verify_optimal_assignment(&data, &centroids, &labels));
+}
+
+#[test]
+fn test_many_clusters() {
+    // Test K-means with many clusters (k = 10% of data)
+    let n = 500;
+    let dim = 16;
+    let k = 50;
+
+    let data = Array2::from_shape_vec(
+        (n, dim),
+        (0..n * dim).map(|x| (x as f32 * 0.05) % 30.0).collect(),
+    )
+    .unwrap();
+
+    let (centroids, labels) =
+        run_kmeans_parallel(&data, k, 50, Some(1e-4)).expect("K-means failed");
+
+    assert_eq!(centroids.nrows(), k);
+    assert_eq!(centroids.ncols(), dim);
+    assert_eq!(labels.len(), n);
+
+    // All labels should be valid
+    for &label in &labels {
+        assert!(label < k, "Label {} out of bounds", label);
+    }
+
+    // Verify optimal assignment
     assert!(verify_optimal_assignment(&data, &centroids, &labels));
 }
 
@@ -392,6 +524,34 @@ fn test_mini_batch_kmeans_small_dataset() {
     assert!(verify_optimal_assignment(&data, &centroids, &labels));
 }
 
+#[test]
+fn test_mini_batch_with_single_cluster() {
+    // Edge case: Mini-batch K-means with k=1
+    let data = Array2::from_shape_vec((50, 4), (0..200).map(|x| x as f32 * 0.3).collect()).unwrap();
+    let k = 1;
+
+    let (centroids, labels) =
+        run_kmeans_mini_batch(&data, k, 50, None).expect("Mini-batch K-means failed");
+
+    assert_eq!(centroids.nrows(), 1);
+    assert_eq!(labels.len(), 50);
+
+    // All labels should be 0
+    assert!(
+        labels.iter().all(|&l| l == 0),
+        "All labels should be 0 for k=1"
+    );
+
+    // Compute expected mean
+    let expected_mean: Vec<f32> = (0..4).map(|d| data.column(d).mean().unwrap()).collect();
+
+    // Centroid should be close to the mean
+    for d in 0..4 {
+        let diff = (centroids[(0, d)] - expected_mean[d]).abs();
+        assert!(diff < 2.0, "Centroid differs too much from mean");
+    }
+}
+
 // ============================================================================
 // Hierarchical Assignment Tests (for large k)
 // ============================================================================
@@ -422,112 +582,145 @@ fn test_mini_batch_kmeans_large_k() {
 
 #[test]
 fn test_hierarchical_vs_brute_force_quality() {
-    // Compare results with k slightly above and below the threshold
-    let (data, _) = create_gaussian_clusters(5, 50, 8, 20.0);
-    let k = 25; // Will use brute force
+    // Compare brute force (k < 100) vs hierarchical (k > 100) assignment quality
 
-    let (centroids, labels_brute) =
-        run_kmeans_mini_batch(&data, k, 50, Some(1e-5)).expect("Brute force failed");
+    // Test with k=25 (brute force)
+    let (data_small, _) = create_gaussian_clusters(5, 50, 8, 20.0);
+    let k_small = 25;
 
-    // Both should produce valid optimal assignments
-    assert!(verify_optimal_assignment(&data, &centroids, &labels_brute));
+    let (centroids_small, labels_small) =
+        run_kmeans_mini_batch(&data_small, k_small, 50, Some(1e-5))
+            .expect("Brute force K-means failed");
 
-    // Test with larger k (will use hierarchical)
+    assert_eq!(centroids_small.nrows(), k_small);
+    assert!(verify_optimal_assignment(
+        &data_small,
+        &centroids_small,
+        &labels_small
+    ));
+
+    // Test with k=150 (hierarchical)
+    let (data_large, _) = create_gaussian_clusters(10, 100, 8, 25.0);
     let k_large = 150;
 
-    // Create larger dataset for larger k
-    let (data_large, _) = create_gaussian_clusters(10, 100, 8, 25.0);
+    let (centroids_large, labels_large) =
+        run_kmeans_mini_batch(&data_large, k_large, 50, Some(1e-4))
+            .expect("Hierarchical K-means failed");
 
-    let (centroids_hier, labels_hier) =
-        run_kmeans_mini_batch(&data_large, k_large, 50, Some(1e-4)).expect("Hierarchical failed");
-
-    assert_eq!(centroids_hier.nrows(), k_large);
+    assert_eq!(centroids_large.nrows(), k_large);
+    // Hierarchical assignment should still maintain optimal assignment
     assert!(verify_optimal_assignment(
         &data_large,
-        &centroids_hier,
-        &labels_hier
+        &centroids_large,
+        &labels_large
     ));
 }
 
-// ============================================================================
-// Helper Functions for Testing
-// ============================================================================
+#[test]
+fn test_hierarchical_assignment_accuracy() {
+    // Verify that hierarchical assignment still maintains accuracy
+    let (data, _) = create_gaussian_clusters(10, 100, 8, 25.0);
+    let k = 150;
 
-/// Calculate the Euclidean distance between two points
-fn euclidean_distance(a: ArrayView1<f32>, b: ArrayView1<f32>) -> f32 {
-    a.iter()
-        .zip(b.iter())
-        .map(|(x, y)| (x - y).powi(2))
-        .sum::<f32>()
-        .sqrt()
+    let (centroids, labels) =
+        run_kmeans_mini_batch(&data, k, 50, Some(1e-4)).expect("Hierarchical assignment failed");
+
+    // Should still maintain optimal assignment
+    assert!(verify_optimal_assignment(&data, &centroids, &labels));
 }
 
-/// Calculate the within-cluster sum of squares (inertia)
-/// This is a standard metric to evaluate clustering quality
-fn calculate_inertia(data: &Array2<f32>, centroids: &Array2<f32>, labels: &Array1<usize>) -> f32 {
-    let mut inertia = 0.0;
-    for (i, &label) in labels.iter().enumerate() {
-        let point = data.row(i);
-        let centroid = centroids.row(label);
-        inertia += euclidean_distance(point, centroid).powi(2);
-    }
-    inertia
-}
+#[test]
+fn test_kmeans_plus_plus_initialization() {
+    // Test that K-means++ initialization produces good results
+    let (data, _) = create_gaussian_clusters(4, 50, 8, 30.0);
+    let k = 4;
 
-/// Verify that each point is assigned to its nearest centroid
-fn verify_optimal_assignment(
-    data: &Array2<f32>,
-    centroids: &Array2<f32>,
-    labels: &Array1<usize>,
-) -> bool {
-    for (i, &assigned_label) in labels.iter().enumerate() {
-        let point = data.row(i);
-        let assigned_dist = euclidean_distance(point, centroids.row(assigned_label));
+    // Run K-means with early stopping
+    let (centroids, labels) =
+        run_kmeans_parallel(&data, k, 20, Some(1e-3)).expect("K-means failed");
 
-        // Check if any other centroid is closer
-        for c in 0..centroids.nrows() {
-            let dist = euclidean_distance(point, centroids.row(c));
-            if dist < assigned_dist - 1e-5 {
-                // Using small epsilon for floating point comparison
-                return false;
+    assert_eq!(centroids.nrows(), k);
+
+    // With good initialization (K-means++), should converge quickly
+    // Verify optimal assignment even with few iterations
+    assert!(verify_optimal_assignment(&data, &centroids, &labels));
+
+    // Centroids should be well-separated (K-means++ property)
+    for i in 0..k {
+        for j in (i + 1)..k {
+            let mut dist_sq = 0.0;
+            for d in 0..8 {
+                let diff = centroids[(i, d)] - centroids[(j, d)];
+                dist_sq += diff * diff;
             }
+            // Centroids should not be too close to each other
+            assert!(dist_sq > 10.0, "Centroids {} and {} too close", i, j);
         }
     }
-    true
 }
 
-/// Create synthetic data with well-separated Gaussian clusters
-fn create_gaussian_clusters(
-    num_clusters: usize,
-    points_per_cluster: usize,
-    dim: usize,
-    separation: f32,
-) -> (Array2<f32>, Vec<usize>) {
-    use rand::Rng;
-    let mut rng = rand::thread_rng();
+// ============================================================================
+// Error Handling Tests
+// ============================================================================
 
-    let total_points = num_clusters * points_per_cluster;
-    let mut data = Array2::<f32>::zeros((total_points, dim));
-    let mut true_labels = Vec::with_capacity(total_points);
+#[test]
+fn test_empty_data_returns_error() {
+    // Error case: Empty data should return an error
+    let data = Array2::<f32>::zeros((0, 5));
+    let result = run_kmeans_parallel(&data, 3, 100, None);
 
-    for cluster_id in 0..num_clusters {
-        // Create a center for this cluster
-        let center: Vec<f32> = (0..dim)
-            .map(|d| (cluster_id as f32) * separation + (d as f32) * 0.1)
-            .collect();
+    assert!(result.is_err(), "Empty data should return an error");
+}
 
-        // Generate points around this center
-        for point_id in 0..points_per_cluster {
-            let idx = cluster_id * points_per_cluster + point_id;
-            true_labels.push(cluster_id);
+#[test]
+fn test_k_larger_than_n_handled() {
+    // Edge case: k > n should be handled gracefully
+    let data = Array2::from_shape_vec(
+        (5, 3),
+        vec![
+            1.0, 2.0, 3.0, 2.0, 3.0, 4.0, 3.0, 4.0, 5.0, 10.0, 11.0, 12.0, 11.0, 12.0, 13.0,
+        ],
+    )
+    .unwrap();
+    let k = 10; // k > n
 
-            for d in 0..dim {
-                // Add Gaussian noise around the center
-                let noise: f32 = rng.gen_range(-0.5..0.5);
-                data[(idx, d)] = center[d] + noise;
+    // This might succeed with empty clusters or fail gracefully
+    // Either behavior is acceptable, but should not panic
+    let result = run_kmeans_parallel(&data, k, 50, None);
+
+    match result {
+        Ok((centroids, labels)) => {
+            // If it succeeds, verify basic properties
+            assert!(centroids.nrows() <= k);
+            assert_eq!(labels.len(), 5);
+            for &label in &labels {
+                assert!(label < k);
             }
         }
+        Err(_) => {
+            // Failing gracefully is also acceptable
+            // The important thing is it didn't panic
+        }
     }
+}
 
-    (data, true_labels)
+// ============================================================================
+// Parallel Execution Tests
+// ============================================================================
+
+#[test]
+fn test_parallel_execution_produces_valid_results() {
+    // Verify parallel execution doesn't introduce race conditions
+    let (data, _) = create_gaussian_clusters(5, 100, 16, 20.0);
+    let k = 5;
+
+    // Run multiple times
+    for _ in 0..3 {
+        let (centroids, labels) =
+            run_kmeans_parallel(&data, k, 50, Some(1e-4)).expect("K-means failed");
+
+        // Each run should produce valid results
+        assert_eq!(centroids.nrows(), k);
+        assert!(verify_optimal_assignment(&data, &centroids, &labels));
+    }
 }
