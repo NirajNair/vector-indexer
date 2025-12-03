@@ -1,23 +1,43 @@
+use crate::utils::*;
 use ndarray::{Array1, Array2};
+use serde::{Deserialize, Serialize};
 
 pub struct VectorStore {
     pub data: Array1<Vector>,
 }
 
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Vector {
     pub id: u64,
+    pub external_id: u64,
     pub data: Array1<f32>,
     pub timestamp: u64,
+}
+
+impl Vector {
+    pub fn new(id: u64, external_id: u64, vector: Array1<f32>, timestamp: u64) -> Self {
+        Vector {
+            id,
+            external_id,
+            data: vector,
+            timestamp,
+        }
+    }
 }
 
 impl VectorStore {
     pub fn new(vectors_data: Vec<(u64, Vec<f32>, u64)>) -> Self {
         let mut vectors = Vec::<Vector>::new();
-        for vector_data in vectors_data.into_iter() {
+        for (idx, vector_data) in vectors_data.into_iter().enumerate() {
             vectors.push(Vector {
-                id: vector_data.0,
+                id: idx as u64,
+                external_id: vector_data.0,
                 data: Array1::from_vec(vector_data.1),
-                timestamp: vector_data.2,
+                timestamp: if vector_data.2 != 0 {
+                    vector_data.2
+                } else {
+                    unix_timestamp_secs()
+                },
             });
         }
         VectorStore {

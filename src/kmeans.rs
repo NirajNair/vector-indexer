@@ -166,6 +166,9 @@ fn kmeans_plus_plus_init_exact(data: &Array2<f32>, k: usize) -> Array2<f32> {
     let n = data.nrows();
     let dim = data.ncols();
     let mut rng = thread_rng();
+    
+    // If k >= n, use all data points as centroids and duplicate some if needed
+    let actual_k = k.min(n);
     let mut centroids = Array2::<f32>::zeros((k, dim));
 
     // Choose first centroid uniformly at random
@@ -176,21 +179,40 @@ fn kmeans_plus_plus_init_exact(data: &Array2<f32>, k: usize) -> Array2<f32> {
     // Track minimum distance from each point to any centroid
     let mut min_distances = vec![f32::INFINITY; n];
 
-    // Choose remaining k-1 centroids
-    for i in 1..k {
+    // Choose remaining centroids up to actual_k
+    for i in 1..actual_k {
         // Update distances: for each point, find distance to nearest centroid
         update_min_distances_parallel(data, &centroids, i, &mut min_distances);
 
         // Choose next centroid with probability proportional to distance²
         let weights: Vec<f32> = min_distances.iter().map(|&d| d * d).collect();
-        let dist = WeightedIndex::new(&weights).expect("All weights are zero or invalid");
-        let chosen_idx = dist.sample(&mut rng);
+        
+        // Check if all weights are zero (all points already selected)
+        let total_weight: f32 = weights.iter().sum();
+        if total_weight == 0.0 {
+            // All points have been selected, duplicate a random existing centroid
+            let dup_idx = rng.gen_range(0..i);
+            let dup_row = centroids.row(dup_idx).to_owned();
+            centroids.row_mut(i).assign(&dup_row);
+            println!("K-means++: Selected centroid {} (duplicate of centroid {})", i, dup_idx);
+        } else {
+            let dist = WeightedIndex::new(&weights).expect("Failed to create weighted distribution");
+            let chosen_idx = dist.sample(&mut rng);
 
-        centroids.row_mut(i).assign(&data.row(chosen_idx));
-        println!(
-            "K-means++: Selected centroid {} (point {}, dist²={:.2})",
-            i, chosen_idx, min_distances[chosen_idx]
-        );
+            centroids.row_mut(i).assign(&data.row(chosen_idx));
+            println!(
+                "K-means++: Selected centroid {} (point {}, dist²={:.2})",
+                i, chosen_idx, min_distances[chosen_idx]
+            );
+        }
+    }
+    
+    // If k > n, fill remaining centroids by duplicating existing ones
+    for i in actual_k..k {
+        let dup_idx = rng.gen_range(0..actual_k);
+        let dup_row = centroids.row(dup_idx).to_owned();
+        centroids.row_mut(i).assign(&dup_row);
+        println!("K-means++: Selected centroid {} (duplicate of centroid {})", i, dup_idx);
     }
 
     centroids
@@ -202,6 +224,9 @@ fn kmeans_plus_plus_init_sampled(data: &Array2<f32>, k: usize, sample_size: usiz
     let n = data.nrows();
     let dim = data.ncols();
     let mut rng = thread_rng();
+    
+    // If k >= n, use exact method instead
+    let actual_k = k.min(n);
     let mut centroids = Array2::<f32>::zeros((k, dim));
 
     println!(
@@ -217,27 +242,47 @@ fn kmeans_plus_plus_init_sampled(data: &Array2<f32>, k: usize, sample_size: usiz
     // Sample a random subset of points to use for distance calculations
     let mut sample_indices: Vec<usize> = (0..n).collect();
     sample_indices.shuffle(&mut rng);
-    sample_indices.truncate(sample_size);
+    sample_indices.truncate(sample_size.min(n));
+    let actual_sample_size = sample_indices.len();
 
     // Track minimum distances for sampled points only
-    let mut min_distances = vec![f32::INFINITY; sample_size];
+    let mut min_distances = vec![f32::INFINITY; actual_sample_size];
 
-    // Choose remaining k-1 centroids using sampled points
-    for i in 1..k {
+    // Choose remaining centroids up to actual_k
+    for i in 1..actual_k {
         // Update distances for sampled points in parallel
         update_min_distances_parallel(data, &centroids, i, &mut min_distances);
 
         // Choose next centroid from sampled points
         let weights: Vec<f32> = min_distances.iter().map(|&d| d * d).collect();
-        let dist = WeightedIndex::new(&weights).expect("All weights are zero or invalid");
-        let sample_idx = dist.sample(&mut rng);
-        let chosen_idx = sample_indices[sample_idx];
+        
+        // Check if all weights are zero
+        let total_weight: f32 = weights.iter().sum();
+        if total_weight == 0.0 {
+            // All sampled points have been selected, duplicate a random existing centroid
+            let dup_idx = rng.gen_range(0..i);
+            let dup_row = centroids.row(dup_idx).to_owned();
+            centroids.row_mut(i).assign(&dup_row);
+            println!("K-means++: Selected centroid {} (duplicate of centroid {})", i, dup_idx);
+        } else {
+            let dist = WeightedIndex::new(&weights).expect("Failed to create weighted distribution");
+            let sample_idx = dist.sample(&mut rng);
+            let chosen_idx = sample_indices[sample_idx];
 
-        centroids.row_mut(i).assign(&data.row(chosen_idx));
-        println!(
-            "K-means++: Selected centroid {} (point {}, dist²={:.2})",
-            i, chosen_idx, min_distances[sample_idx]
-        );
+            centroids.row_mut(i).assign(&data.row(chosen_idx));
+            println!(
+                "K-means++: Selected centroid {} (point {}, dist²={:.2})",
+                i, chosen_idx, min_distances[sample_idx]
+            );
+        }
+    }
+    
+    // If k > n, fill remaining centroids by duplicating existing ones
+    for i in actual_k..k {
+        let dup_idx = rng.gen_range(0..actual_k);
+        let dup_row = centroids.row(dup_idx).to_owned();
+        centroids.row_mut(i).assign(&dup_row);
+        println!("K-means++: Selected centroid {} (duplicate of centroid {})", i, dup_idx);
     }
 
     centroids

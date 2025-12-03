@@ -1,5 +1,7 @@
 use crate::ivf_index::{Centroid, IVFList};
+use crate::vector_store::Vector;
 use memmap2::Mmap;
+use ndarray::Array1;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{Error, ErrorKind, Result, Write};
@@ -41,9 +43,10 @@ struct CentroidIndex {
 #[repr(C)]
 #[derive(IntoBytes, FromBytes, Immutable, KnownLayout, Debug, Clone, Copy)]
 pub struct VectorMeta {
-    pub vector_id: u64,
+    pub id: u64,
+    pub external_id: u64,
     pub timestamp: u64,
-} // 16 bytes
+}
 
 impl Shard {
     pub fn new(id: u64, centroids: Vec<Centroid>, ivf_lists: Vec<IVFList>, dimension: u32) -> Self {
@@ -57,7 +60,12 @@ impl Shard {
 
     pub fn save(&self) -> Result<()> {
         fs::create_dir_all("shards")?;
-        let mut file = File::create(format!("shards/shard_{}.bin", self.id))?;
+
+        // Remove existing file if it exists to avoid "File exists" error
+        let shard_path = format!("shards/shard_{}.bin", self.id);
+        let _ = fs::remove_file(&shard_path); // Ignore error if file doesn't exist
+
+        let mut file = File::create(&shard_path)?;
 
         let header_size = mem::size_of::<ShardHeader>();
         let index_entry_size = mem::size_of::<CentroidIndex>();
@@ -87,9 +95,16 @@ impl Shard {
         let mut current_data_offset = data_offset as u64;
 
         for (_i, ivf_list) in self.ivf_lists.iter().enumerate() {
+            // Calculate padding needed after centroid vector to align to 8 bytes
+            let centroid_padding = (8 - (centroid_vector_size % 8)) % 8;
+
+            // Calculate padding needed after each vector to align next VectorMeta to 8 bytes
+            let vector_padding = (8 - (data_vector_size % 8)) % 8;
+
             // Calculate size of this cluster block
             let cluster_size = centroid_vector_size
-                + ivf_list.vectors.len() * (vector_meta_size + data_vector_size);
+                + centroid_padding
+                + ivf_list.vectors.len() * (vector_meta_size + data_vector_size + vector_padding);
 
             // Create index entry
             let index_entry = CentroidIndex {
@@ -105,19 +120,29 @@ impl Shard {
             let mut cluster_block = Vec::new();
 
             // 1. Write centroid vector
-            cluster_block.extend_from_slice(IntoBytes::as_bytes(&ivf_list.centroid.vector[..]));
+            let centroid_slice: &[f32] = &ivf_list.centroid.vector;
+            cluster_block.extend_from_slice(<[f32]>::as_bytes(centroid_slice));
+
+            // Add padding to align to 8 bytes for VectorMeta
+            cluster_block.extend_from_slice(&vec![0u8; centroid_padding]);
 
             // 2. Write each vector with its metadata
-            for (vec_idx, vector) in ivf_list.vectors.iter().enumerate() {
+            for vector in ivf_list.vectors.iter() {
                 // Write vector metadata
                 let vector_meta = VectorMeta {
-                    vector_id: vec_idx as u64, // Or use actual vector ID if available
-                    timestamp: 0,
+                    id: vector.id,                   // internal vector ID
+                    external_id: vector.external_id, // external vector ID
+                    timestamp: vector.timestamp,
                 };
                 cluster_block.extend_from_slice(vector_meta.as_bytes());
 
                 // Write vector data
-                cluster_block.extend_from_slice(IntoBytes::as_bytes(&vector[..]));
+                let vector_slice = vector.data.as_slice().unwrap();
+                cluster_block.extend_from_slice(<[f32]>::as_bytes(vector_slice));
+
+                // Add padding after each vector to align next VectorMeta to 8 bytes
+                let vector_padding = (8 - (data_vector_size % 8)) % 8;
+                cluster_block.extend_from_slice(&vec![0u8; vector_padding]);
             }
 
             cluster_blocks.push(cluster_block);
@@ -156,6 +181,17 @@ impl Shard {
         // Read header
         let (header, _) = ShardHeader::ref_from_prefix(&mmap[..mem::size_of::<ShardHeader>()])
             .or_else(|_| Err(Error::new(ErrorKind::InvalidData, "Invalid shard header")))?;
+
+        // Validate that the shard ID in the file matches the expected shard ID
+        if header.shard_id != shard_id {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "Shard ID mismatch: expected {}, found {} in file",
+                    shard_id, header.shard_id
+                ),
+            ));
+        }
 
         println!(
             "Reading shard {}: {} centroids, {} dimensions",
@@ -198,8 +234,10 @@ impl Shard {
             // Parse cluster block
             let dims = header.dimensions as usize;
             let centroid_size = dims * mem::size_of::<f32>();
+            let centroid_padding = (8 - (centroid_size % 8)) % 8;
             let vector_meta_size = mem::size_of::<VectorMeta>();
             let vector_data_size = dims * mem::size_of::<f32>();
+            let vector_padding = (8 - (vector_data_size % 8)) % 8;
 
             // 1. Read centroid vector
             let centroid_bytes = &cluster_block[..centroid_size];
@@ -214,15 +252,24 @@ impl Shard {
 
             // 2. Read vectors with metadata
             let mut vectors = Vec::new();
-            let mut offset = centroid_size;
+            let mut offset = centroid_size + centroid_padding;
 
-            for _ in 0..index_entry.num_vectors {
+            for i in 0..index_entry.num_vectors {
                 // Read vector metadata
+                // Check if we have enough bytes
+                if offset + vector_meta_size > cluster_block.len() {
+                    return Err(Error::new(
+                        ErrorKind::InvalidData,
+                        format!("Not enough bytes for vector {} metadata: need {} bytes at offset {}, but cluster_block is {} bytes",
+                                i, vector_meta_size, offset, cluster_block.len()),
+                    ));
+                }
+
                 let (meta, _) =
-                    VectorMeta::ref_from_prefix(&cluster_block[offset..]).or_else(|_| {
+                    VectorMeta::ref_from_prefix(&cluster_block[offset..]).or_else(|err| {
                         Err(Error::new(
                             ErrorKind::InvalidData,
-                            "Invalid vector metadata",
+                            format!("Invalid vector metadata at offset {}: {:?}", offset, err),
                         ))
                     })?;
                 offset += vector_meta_size;
@@ -238,6 +285,9 @@ impl Shard {
                     })?
                     .to_vec();
                 offset += vector_data_size;
+
+                // Skip padding after vector data
+                offset += vector_padding;
 
                 vectors.push((*meta, vector));
             }
@@ -260,8 +310,31 @@ impl Shard {
         let (header, _) = ShardHeader::ref_from_prefix(&mmap[..mem::size_of::<ShardHeader>()])
             .or_else(|_| Err(Error::new(ErrorKind::InvalidData, "Invalid header")))?;
 
-        // Read all centroids
-        let all_centroid_ids: Vec<u64> = (0..header.num_centroids as u64).collect();
+        // Validate that the shard ID in the file matches the expected shard ID
+        if header.shard_id != shard_id {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "Shard ID mismatch: expected {}, found {} in file",
+                    shard_id, header.shard_id
+                ),
+            ));
+        }
+
+        // Read index array to get actual centroid IDs
+        let index_start = header.index_offset as usize;
+        let index_entry_size = mem::size_of::<CentroidIndex>();
+        let mut all_centroid_ids = Vec::new();
+
+        for i in 0..header.num_centroids as usize {
+            let offset = index_start + i * index_entry_size;
+            let (entry, _) =
+                CentroidIndex::ref_from_prefix(&mmap[offset..offset + index_entry_size])
+                    .or_else(|_| Err(Error::new(ErrorKind::InvalidData, "Invalid index entry")))?;
+            all_centroid_ids.push(entry.centroid_id);
+        }
+
+        // Read all centroids using their actual IDs
         let cluster_data = Self::get_centroid_vectors(shard_id, &all_centroid_ids)?;
 
         // Reconstruct Shard structure
@@ -278,17 +351,16 @@ impl Shard {
 
             // Create IVFList
             let mut vectors = Vec::new();
-            let mut ids = Vec::new();
             for (meta, vec) in vectors_with_meta {
-                ids.push(meta.vector_id as usize);
-                vectors.push(vec);
+                vectors.push(Vector::new(
+                    meta.id,
+                    meta.external_id,
+                    Array1::from_vec(vec),
+                    meta.timestamp,
+                ));
             }
 
-            let ivf_list = IVFList {
-                centroid,
-                vectors,
-                ids,
-            };
+            let ivf_list = IVFList { centroid, vectors };
             ivf_lists.push(ivf_list);
         }
 

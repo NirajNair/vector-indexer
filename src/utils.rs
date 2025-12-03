@@ -4,6 +4,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::sync::mpsc::sync_channel;
 use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn calculate_num_clusters(num_vectors: usize) -> usize {
     let clusters = match num_vectors {
@@ -103,4 +104,11 @@ pub fn read_vectors_from_file(
     }
 
     Ok(all_vectors)
+}
+
+pub fn unix_timestamp_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards")
+        .as_secs()
 }

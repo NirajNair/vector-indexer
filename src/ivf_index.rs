@@ -1,7 +1,7 @@
 use crate::kmeans::run_kmeans_mini_batch;
 use crate::shards::Shard;
 use crate::utils::{calculate_max_iterations, calculate_num_clusters, euclidean_distance_squared};
-use crate::vector_store::VectorStore;
+use crate::vector_store::{Vector, VectorStore};
 use ndarray::{Array1, Axis};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
@@ -22,17 +22,12 @@ impl Centroid {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct IVFList {
     pub centroid: Centroid,
-    pub vectors: Vec<Vec<f32>>,
-    pub ids: Vec<usize>,
+    pub vectors: Vec<Vector>,
 }
 
 impl IVFList {
-    pub fn new(centroid: Centroid, vectors: Vec<Vec<f32>>, ids: Vec<usize>) -> Self {
-        IVFList {
-            centroid,
-            vectors,
-            ids,
-        }
+    pub fn new(centroid: Centroid, vectors: Vec<Vector>) -> Self {
+        IVFList { centroid, vectors }
     }
 }
 
@@ -85,14 +80,16 @@ impl IvfIndex {
         // Create IVF lists for each centroid
         let mut ivf_lists: Vec<IVFList> = Vec::new();
         for centroid in centroids.clone() {
-            ivf_lists.push(IVFList::new(centroid, Vec::new(), Vec::new()));
+            ivf_lists.push(IVFList::new(centroid, Vec::new()));
         }
 
         // Assign vectors to IVF lists
-        for (i, vector) in vector_arr.axis_iter(Axis(0)).enumerate() {
+        let rows = vector_arr.nrows();
+        for i in 0..rows {
             // Find ivf list correspoding to centroid id (labels[i])
-            ivf_lists[labels[i]].vectors.push(vector.to_vec());
-            ivf_lists[labels[i]].ids.push(i);
+            ivf_lists[labels[i]]
+                .vectors
+                .push(vector_store.data[i].clone());
         }
 
         // Run kmeans to find super centroids to group similar centroids together
@@ -112,18 +109,50 @@ impl IvfIndex {
             .map(|i| Shard::new(i as u64, Vec::new(), Vec::new(), dimension))
             .collect();
 
+        // Filter out empty IVF lists (centroids with no vectors)
+        let non_empty_ivf_lists: Vec<_> = ivf_lists
+            .into_iter()
+            .filter(|ivf_list| !ivf_list.vectors.is_empty())
+            .collect();
+
+        println!(
+            "Filtered {} empty IVF lists, {} non-empty remain",
+            k - non_empty_ivf_lists.len(),
+            non_empty_ivf_lists.len()
+        );
+
+        // Build mapping from old centroid ID to new index in filtered arrays (for future use)
+        let _old_id_to_new_idx: std::collections::HashMap<usize, usize> = non_empty_ivf_lists
+            .iter()
+            .enumerate()
+            .map(|(new_idx, ivf_list)| (ivf_list.centroid.id, new_idx))
+            .collect();
+
+        // Create filtered centroids array with updated IDs
+        let filtered_centroids: Array1<Centroid> = non_empty_ivf_lists
+            .iter()
+            .enumerate()
+            .map(|(new_id, ivf_list)| {
+                Centroid::new(new_id, ivf_list.centroid.vector.clone())
+            })
+            .collect();
+
         // Assign centroids & IVF lists to shards based on super centroid labels
-        let mut centroids_to_shard: Array1<usize> = Array1::from_elem(k, 0);
-        for (_i, ivf_list) in ivf_lists.iter().enumerate() {
-            let shard_id = super_centroid_labels[ivf_list.centroid.id.clone()];
-            let centroid_id = ivf_list.centroid.id.clone();
+        let num_non_empty = non_empty_ivf_lists.len();
+        let mut centroids_to_shard: Array1<usize> = Array1::from_elem(num_non_empty, 0);
+        
+        for (new_idx, ivf_list) in non_empty_ivf_lists.iter().enumerate() {
+            let old_centroid_id = ivf_list.centroid.id;
+            let shard_id = super_centroid_labels[old_centroid_id];
 
-            centroids_to_shard[centroid_id] = shard_id;
+            centroids_to_shard[new_idx] = shard_id;
 
-            shards[shard_id].ivf_lists.push(ivf_list.clone());
-            shards[shard_id]
-                .centroids
-                .push(centroids[centroid_id].clone());
+            // Create IVF list with updated centroid ID
+            let updated_centroid = Centroid::new(new_idx, ivf_list.centroid.vector.clone());
+            let updated_ivf_list = IVFList::new(updated_centroid.clone(), ivf_list.vectors.clone());
+
+            shards[shard_id].ivf_lists.push(updated_ivf_list);
+            shards[shard_id].centroids.push(updated_centroid);
         }
 
         let shards_len = shards.len();
@@ -134,7 +163,7 @@ impl IvfIndex {
         }
         println!("{} shards written to disk", shards_len);
 
-        self.centroids = centroids;
+        self.centroids = filtered_centroids;
         self.centroids_to_shard = centroids_to_shard;
         self.dimension = dimension;
     }
@@ -189,7 +218,7 @@ impl IvfIndex {
                 for (_, _, vectors_with_metadata) in cluster_data {
                     for (metadata, vector) in vectors_with_metadata {
                         let dist = euclidean_distance_squared(query, &vector);
-                        candidates.push((metadata.vector_id as usize, dist));
+                        candidates.push((metadata.id as usize, dist));
                     }
                 }
             }
