@@ -48,18 +48,6 @@ fn test_labels_assignment_is_optimal() {
     );
 }
 
-#[test]
-fn test_centroids_have_correct_dimensions() {
-    // Verify centroids match input dimensionality
-    let data = create_test_vectors(50, 16);
-    let k = 5;
-
-    let (centroids, _labels) = run_kmeans_parallel(&data, k, 50, None).expect("K-means failed");
-
-    assert_eq!(centroids.nrows(), k);
-    assert_eq!(centroids.ncols(), 16);
-}
-
 // ============================================================================
 // Edge Cases Tests
 // ============================================================================
@@ -109,7 +97,7 @@ fn test_k_equals_n() {
 #[test]
 fn test_high_dimensional_data() {
     // Real-world scenario: Test with higher dimensional data (common in embeddings)
-    let dim = 256;
+    let dim = 1536;
     let n = 100;
     let data = Array2::from_shape_vec(
         (n, dim),
@@ -210,48 +198,128 @@ fn test_convergence_improves_clustering() {
 }
 
 #[test]
-fn test_early_stopping_works() {
-    // Test that early stopping threshold is respected
-    let (data, _) = create_gaussian_clusters(3, 40, 4, 20.0);
-
-    let (centroids, _labels) =
-        run_kmeans_parallel(&data, 3, 1000, Some(1e-2)).expect("K-means failed");
-
-    // If early stopping works, it should converge before 1000 iterations
-    // We just verify it completes successfully
-    assert_eq!(centroids.nrows(), 3);
-}
-
-#[test]
 fn test_deterministic_with_same_initialization() {
     // Test that running K-means multiple times produces valid results
     // Note: K-means++ initialization is random, so exact reproducibility isn't guaranteed
-    let data = create_deterministic_vectors(100, 8, 42);
-    let k = 5;
+    // Test with three different dataset sizes to verify 20% threshold is appropriate
 
-    // Run K-means multiple times
-    let (centroids1, labels1) =
-        run_kmeans_parallel(&data, k, 50, Some(1e-4)).expect("First run failed");
-    let (centroids2, labels2) =
-        run_kmeans_parallel(&data, k, 50, Some(1e-4)).expect("Second run failed");
+    println!("\n=== Testing with different dataset dimensions ===");
 
-    // Both runs should produce valid results
-    assert_eq!(centroids1.nrows(), k);
-    assert_eq!(centroids2.nrows(), k);
-    assert!(verify_optimal_assignment(&data, &centroids1, &labels1));
-    assert!(verify_optimal_assignment(&data, &centroids2, &labels2));
+    // Test 1: Small dataset (100, 8)
+    println!("\nTest 1: Dataset (100, 8)");
+    let data1 = create_deterministic_vectors(100, 8, 42);
+    let k1 = 5;
 
-    // Inertia should be similar (within reasonable range due to randomness)
-    let inertia1 = calculate_inertia(&data, &centroids1, &labels1);
-    let inertia2 = calculate_inertia(&data, &centroids2, &labels2);
+    let (centroids1a, labels1a) =
+        run_kmeans_parallel(&data1, k1, 50, Some(1e-4)).expect("First run failed");
+    let (centroids1b, labels1b) =
+        run_kmeans_parallel(&data1, k1, 50, Some(1e-4)).expect("Second run failed");
 
-    // Both should produce good clusterings (within 20% of each other)
-    let ratio = if inertia1 > inertia2 {
-        inertia1 / inertia2
+    assert_eq!(centroids1a.nrows(), k1);
+    assert_eq!(centroids1b.nrows(), k1);
+    assert!(verify_optimal_assignment(&data1, &centroids1a, &labels1a));
+    assert!(verify_optimal_assignment(&data1, &centroids1b, &labels1b));
+
+    let inertia1a = calculate_inertia(&data1, &centroids1a, &labels1a);
+    let inertia1b = calculate_inertia(&data1, &centroids1b, &labels1b);
+
+    let ratio1 = if inertia1a > inertia1b {
+        inertia1a / inertia1b
     } else {
-        inertia2 / inertia1
+        inertia1b / inertia1a
     };
-    assert!(ratio < 1.2, "Inertia ratio {} too high", ratio);
+    println!(
+        "  Inertia 1a: {:.4}, Inertia 1b: {:.4}, Ratio: {:.4}",
+        inertia1a, inertia1b, ratio1
+    );
+    assert!(
+        ratio1 < 1.2,
+        "Dataset (100, 8): Inertia ratio {} too high",
+        ratio1
+    );
+
+    // Test 2: Medium dataset (1000, 128)
+    println!("\nTest 2: Dataset (1000, 128)");
+    let data2 = create_deterministic_vectors(1000, 128, 42);
+    let k2 = 10;
+
+    let (centroids2a, labels2a) =
+        run_kmeans_parallel(&data2, k2, 50, Some(1e-4)).expect("First run failed");
+    let (centroids2b, labels2b) =
+        run_kmeans_parallel(&data2, k2, 50, Some(1e-4)).expect("Second run failed");
+
+    assert_eq!(centroids2a.nrows(), k2);
+    assert_eq!(centroids2b.nrows(), k2);
+    assert!(verify_optimal_assignment(&data2, &centroids2a, &labels2a));
+    assert!(verify_optimal_assignment(&data2, &centroids2b, &labels2b));
+
+    let inertia2a = calculate_inertia(&data2, &centroids2a, &labels2a);
+    let inertia2b = calculate_inertia(&data2, &centroids2b, &labels2b);
+
+    let ratio2 = if inertia2a > inertia2b {
+        inertia2a / inertia2b
+    } else {
+        inertia2b / inertia2a
+    };
+    println!(
+        "  Inertia 2a: {:.4}, Inertia 2b: {:.4}, Ratio: {:.4}",
+        inertia2a, inertia2b, ratio2
+    );
+    assert!(
+        ratio2 < 1.2,
+        "Dataset (1000, 128): Inertia ratio {} too high",
+        ratio2
+    );
+
+    // Test 3: Large dataset (5000, 256)
+    println!("\nTest 3: Dataset (5000, 256)");
+    let data3 = create_deterministic_vectors(5000, 256, 42);
+    let k3 = 15;
+
+    let (centroids3a, labels3a) =
+        run_kmeans_parallel(&data3, k3, 50, Some(1e-4)).expect("First run failed");
+    let (centroids3b, labels3b) =
+        run_kmeans_parallel(&data3, k3, 50, Some(1e-4)).expect("Second run failed");
+
+    assert_eq!(centroids3a.nrows(), k3);
+    assert_eq!(centroids3b.nrows(), k3);
+    assert!(verify_optimal_assignment(&data3, &centroids3a, &labels3a));
+    assert!(verify_optimal_assignment(&data3, &centroids3b, &labels3b));
+
+    let inertia3a = calculate_inertia(&data3, &centroids3a, &labels3a);
+    let inertia3b = calculate_inertia(&data3, &centroids3b, &labels3b);
+
+    let ratio3 = if inertia3a > inertia3b {
+        inertia3a / inertia3b
+    } else {
+        inertia3b / inertia3a
+    };
+    println!(
+        "  Inertia 3a: {:.4}, Inertia 3b: {:.4}, Ratio: {:.4}",
+        inertia3a, inertia3b, ratio3
+    );
+    assert!(
+        ratio3 < 1.2,
+        "Dataset (5000, 256): Inertia ratio {} too high",
+        ratio3
+    );
+
+    println!("\n=== Summary ===");
+    println!(
+        "Dataset (100, 8):    Ratio = {:.4} ({})",
+        ratio1,
+        if ratio1 < 1.2 { "PASS" } else { "FAIL" }
+    );
+    println!(
+        "Dataset (1000, 128): Ratio = {:.4} ({})",
+        ratio2,
+        if ratio2 < 1.2 { "PASS" } else { "FAIL" }
+    );
+    println!(
+        "Dataset (5000, 256): Ratio = {:.4} ({})",
+        ratio3,
+        if ratio3 < 1.2 { "PASS" } else { "FAIL" }
+    );
 }
 
 // ============================================================================

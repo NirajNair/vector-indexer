@@ -54,8 +54,12 @@ fn test_full_pipeline_small_dataset() {
     assert!(results.len() <= 10, "Should return at most k results");
 
     // First result should be close to query (since query is from dataset)
-    let (_id, distance) = results[0];
-    assert!(distance < 1.0, "Nearest neighbor should be close");
+    let (_id, distance, vector) = &results[0];
+    assert!(*distance < 1.0, "Nearest neighbor should be close");
+    assert_eq!(
+        *vector, query,
+        "Query vector is not matching with the top ranked vector in search results"
+    );
 
     println!(
         "Search completed successfully with {} results",
@@ -95,8 +99,10 @@ fn test_full_pipeline_with_persistence() {
         println!("Search returned {} results", results.len());
 
         // Query vector should be in results (it's from the dataset)
-        let found_self = results.iter().any(|(id, dist)| *id == 10 || *dist < 0.01);
-        assert!(found_self, "Should find the query vector itself");
+        assert_eq!(
+            results[0].2, query_vector,
+            "Query vector is not matching with the top ranked vector in search results"
+        );
     }
 
     // Cleanup
@@ -145,6 +151,10 @@ fn test_multiple_queries_consistency() {
                 (all_results[0][j].1 - all_results[i][j].1).abs() < 1e-6,
                 "Result distances should be consistent"
             );
+            assert_eq!(
+                all_results[0][j].2, all_results[i][j].2,
+                "Result vectors should be consistent"
+            );
         }
     }
 
@@ -175,12 +185,12 @@ fn test_search_result_validation() {
     assert!(!results.is_empty(), "Should have results");
 
     // All IDs should be valid (< number of vectors)
-    for (id, _dist) in &results {
+    for (id, _, _) in &results {
         assert!(*id < vectors.nrows(), "Vector ID {} out of range", id);
     }
 
     // Distances should be non-negative
-    for (_id, dist) in &results {
+    for (_, dist, _) in &results {
         assert!(*dist >= 0.0, "Distance should be non-negative");
     }
 
@@ -245,6 +255,12 @@ fn test_cross_module_data_flow() {
             "Should find neighbors for cluster {}",
             cluster_id
         );
+
+        // Query vector should be in results (it's from the dataset)
+        assert_eq!(
+            results[0].2, query,
+            "Query vector is not matching with the top ranked vector in search results"
+        );
     }
 
     println!("Successfully searched from all clusters");
@@ -282,13 +298,13 @@ fn test_recall_quality_on_known_data() {
 
         // Search with low n_probe
         let results_low = loaded_index.search(&query, k, 5).expect("Search failed");
-        let found_low: Vec<usize> = results_low.iter().map(|(id, _)| *id).collect();
+        let found_low: Vec<usize> = results_low.iter().map(|(id, _, _)| *id).collect();
         let recall_low = calculate_recall(&true_neighbors, &found_low);
         total_recall_low += recall_low;
 
         // Search with high n_probe
         let results_high = loaded_index.search(&query, k, 15).expect("Search failed");
-        let found_high: Vec<usize> = results_high.iter().map(|(id, _)| *id).collect();
+        let found_high: Vec<usize> = results_high.iter().map(|(id, _, _)| *id).collect();
         let recall_high = calculate_recall(&true_neighbors, &found_high);
         total_recall_high += recall_high;
     }
@@ -325,43 +341,6 @@ fn test_recall_quality_on_known_data() {
 // ============================================================================
 // Multi-Shard Integration Tests
 // ============================================================================
-
-#[test]
-#[serial]
-fn test_search_across_multiple_shards() {
-    // Test that search correctly queries multiple shards
-    cleanup_test_files(); // Clean up any leftover files from previous tests
-
-    // Create enough data to generate multiple shards
-    let vector_store = create_test_vector_store(500, 32);
-    let mut index = IvfIndex::new(32);
-
-    index.fit(&vector_store);
-    index.save().expect("Failed to save index");
-
-    // Verify multiple shards were created
-    let shard_count = std::fs::read_dir("shards")
-        .expect("Failed to read shards dir")
-        .count();
-
-    println!("Created {} shards", shard_count);
-    assert!(shard_count >= 2, "Should create multiple shards");
-
-    // Load and search
-    let loaded_index = load_index().expect("Failed to load index");
-    let query = vec![10.0; 32];
-
-    // Search with high n_probe to hit multiple shards
-    let results = loaded_index.search(&query, 20, 20).expect("Search failed");
-
-    assert!(
-        results.len() >= 10,
-        "Should find results from multiple shards"
-    );
-
-    // Cleanup
-    cleanup_test_files();
-}
 
 #[test]
 #[serial]

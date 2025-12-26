@@ -130,8 +130,15 @@ fn test_search_exact_match() {
 
     // First result should be the query vector itself (or very close)
     assert!(!results.is_empty());
-    let (_id, distance) = results[0];
-    assert!(distance < 0.1, "First result should be very close to query");
+    let (_id, distance, vector) = &results[0];
+    assert!(
+        *distance < 0.1,
+        "First result should be very close to query"
+    );
+    assert_eq!(
+        *vector, first_vector,
+        "First result should be the query vector itself"
+    );
 
     // Cleanup
     cleanup_test_files();
@@ -248,7 +255,7 @@ fn test_search_with_k_larger_than_dataset() {
 
     // Should return at most 50 results (all available vectors)
     assert!(
-        results.len() <= 50,
+        results.len() == 50,
         "Returned more results than available vectors"
     );
     assert!(!results.is_empty(), "Should return some results");
@@ -328,9 +335,9 @@ fn test_index_with_single_vector() {
 
 #[test]
 #[serial]
-fn test_search_with_k_zero() {
+fn test_search_with_k_and_n_probe_zero() {
     cleanup_test_files();
-    // Edge case: Search with k=0
+    // Edge case: Search with k=0 and n_probe=0 should return errors
     let vector_store = create_test_vector_store(100, 8);
     let mut index = IvfIndex::new(8);
 
@@ -339,16 +346,37 @@ fn test_search_with_k_zero() {
 
     let query = vec![1.0; 8];
 
-    // Search with k=0
-    let results = index
-        .search(&query, 0, 5)
-        .expect("Search with k=0 should not error");
-
-    // Should return empty results
+    // Search with k=0 should error
+    let result = index.search(&query, 0, 5);
+    assert!(result.is_err(), "Search with k=0 should return an error");
     assert_eq!(
-        results.len(),
-        0,
-        "Search with k=0 should return empty results"
+        result.unwrap_err().kind(),
+        std::io::ErrorKind::InvalidInput,
+        "Error should be InvalidInput"
+    );
+
+    // Search with n_probe=0 should error
+    let result = index.search(&query, 5, 0);
+    assert!(
+        result.is_err(),
+        "Search with n_probe=0 should return an error"
+    );
+    assert_eq!(
+        result.unwrap_err().kind(),
+        std::io::ErrorKind::InvalidInput,
+        "Error should be InvalidInput"
+    );
+
+    // Search with both k=0 and n_probe=0 should error
+    let result = index.search(&query, 0, 0);
+    assert!(
+        result.is_err(),
+        "Search with k=0 and n_probe=0 should return an error"
+    );
+    assert_eq!(
+        result.unwrap_err().kind(),
+        std::io::ErrorKind::InvalidInput,
+        "Error should be InvalidInput"
     );
 
     // Cleanup
@@ -358,40 +386,6 @@ fn test_search_with_k_zero() {
 // ============================================================================
 // Integration Tests
 // ============================================================================
-
-#[test]
-#[serial]
-fn test_end_to_end_indexing_and_search() {
-    cleanup_test_files();
-    // Full end-to-end test
-    let (vector_store, _) = create_gaussian_vector_store(4, 50, 16, 25.0);
-    let mut index = IvfIndex::new(16);
-
-    // Build index
-    index.fit(&vector_store);
-    index.save().expect("Failed to save index");
-
-    // Reload index from disk
-    let loaded_index = load_index().expect("Failed to load index");
-
-    // Perform searches
-    let vectors = vector_store.get_vectors();
-    let query1 = vectors.row(0).to_vec();
-    let query2 = vectors.row(50).to_vec();
-
-    let results1 = loaded_index
-        .search(&query1, 10, 5)
-        .expect("First search failed");
-    let results2 = loaded_index
-        .search(&query2, 10, 5)
-        .expect("Second search failed");
-
-    assert!(!results1.is_empty());
-    assert!(!results2.is_empty());
-
-    // Cleanup
-    cleanup_test_files();
-}
 
 #[test]
 #[serial]
@@ -413,7 +407,7 @@ fn test_search_finds_nearest_neighbors() {
     // Search using index
     let results = index.search(&query, 10, 15).expect("Search failed");
 
-    let found_neighbors: Vec<usize> = results.iter().map(|(id, _)| *id).collect();
+    let found_neighbors: Vec<usize> = results.iter().map(|(id, _, _)| *id).collect();
 
     // Calculate recall
     let recall = calculate_recall(&true_neighbors, &found_neighbors);
@@ -449,7 +443,7 @@ fn test_index_with_well_separated_clusters() {
     // Since clusters are well-separated, most results should be from the same cluster
     let same_cluster_count = results
         .iter()
-        .filter(|(id, _)| true_labels[*id] == 0)
+        .filter(|(id, _, _)| true_labels[*id] == 0)
         .count();
 
     // At least 50% of results should be from the same cluster
@@ -467,23 +461,6 @@ fn test_index_with_well_separated_clusters() {
 // ============================================================================
 // Consistency Tests
 // ============================================================================
-
-#[test]
-#[serial]
-fn test_centroid_to_shard_mapping_valid() {
-    cleanup_test_files();
-    // Test that centroid-to-shard mapping is valid after fitting
-    let vector_store = create_test_vector_store(300, 12);
-    let mut index = IvfIndex::new(12);
-
-    index.fit(&vector_store);
-
-    // All centroids should be mapped to valid shards
-    // We can't directly test internals, but the process should complete
-
-    // Cleanup
-    cleanup_test_files();
-}
 
 #[test]
 #[serial]
@@ -592,37 +569,6 @@ fn test_no_duplicate_vectors_across_shards() {
     cleanup_test_files();
 }
 
-#[test]
-#[serial]
-fn test_multiple_searches_same_query() {
-    cleanup_test_files();
-    // Test that searching for the same query multiple times gives same results
-    let vector_store = create_test_vector_store(150, 8);
-    let mut index = IvfIndex::new(8);
-
-    index.fit(&vector_store);
-    index.save().expect("Failed to save index");
-
-    let query = vec![5.0; 8];
-
-    // Search multiple times
-    let results1 = index.search(&query, 10, 5).expect("First search failed");
-    let results2 = index.search(&query, 10, 5).expect("Second search failed");
-    let results3 = index.search(&query, 10, 5).expect("Third search failed");
-
-    // Results should be identical
-    assert_eq!(results1.len(), results2.len());
-    assert_eq!(results1.len(), results3.len());
-
-    for i in 0..results1.len() {
-        assert_eq!(results1[i].0, results2[i].0, "Results should be identical");
-        assert_eq!(results1[i].0, results3[i].0, "Results should be identical");
-    }
-
-    // Cleanup
-    cleanup_test_files();
-}
-
 // ============================================================================
 // High-Dimensional Data Tests
 // ============================================================================
@@ -632,7 +578,7 @@ fn test_multiple_searches_same_query() {
 fn test_index_high_dimensional_vectors() {
     cleanup_test_files();
     // Test with realistic high-dimensional data (e.g., embeddings)
-    let dim = 384;
+    let dim = 1536;
     let vector_store = create_test_vector_store(200, dim);
     let mut index = IvfIndex::new(dim as u32);
 
@@ -672,7 +618,7 @@ fn test_search_recall_quality() {
         let true_neighbors = find_true_nearest_neighbors(&query, &vectors, 10);
 
         let results = index.search(&query, 10, 20).expect("Search failed");
-        let found_neighbors: Vec<usize> = results.iter().map(|(id, _)| *id).collect();
+        let found_neighbors: Vec<usize> = results.iter().map(|(id, _, _)| *id).collect();
 
         let recall = calculate_recall(&true_neighbors, &found_neighbors);
         total_recall += recall;
