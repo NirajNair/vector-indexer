@@ -132,15 +132,13 @@ impl IvfIndex {
         let filtered_centroids: Array1<Centroid> = non_empty_ivf_lists
             .iter()
             .enumerate()
-            .map(|(new_id, ivf_list)| {
-                Centroid::new(new_id, ivf_list.centroid.vector.clone())
-            })
+            .map(|(new_id, ivf_list)| Centroid::new(new_id, ivf_list.centroid.vector.clone()))
             .collect();
 
         // Assign centroids & IVF lists to shards based on super centroid labels
         let num_non_empty = non_empty_ivf_lists.len();
         let mut centroids_to_shard: Array1<usize> = Array1::from_elem(num_non_empty, 0);
-        
+
         for (new_idx, ivf_list) in non_empty_ivf_lists.iter().enumerate() {
             let old_centroid_id = ivf_list.centroid.id;
             let shard_id = super_centroid_labels[old_centroid_id];
@@ -174,7 +172,11 @@ impl IvfIndex {
         query: &[f32],
         k: usize,
         n_probe: usize, // Number of centroids to search
-    ) -> Result<Vec<(usize, f32)>> {
+    ) -> Result<Vec<(usize, f32, Vec<f32>)>> {
+        if k == 0 || n_probe == 0 {
+            return Err(Error::new(ErrorKind::InvalidInput, "k and n_probe must be greater than 0"));
+        }
+
         // Find n_probe nearest centroids to query
         let mut centroid_distances: Vec<(usize, f32)> = self
             .centroids
@@ -218,7 +220,7 @@ impl IvfIndex {
                 for (_, _, vectors_with_metadata) in cluster_data {
                     for (metadata, vector) in vectors_with_metadata {
                         let dist = euclidean_distance_squared(query, &vector);
-                        candidates.push((metadata.id as usize, dist));
+                        candidates.push((metadata.external_id as usize, dist, vector));
                     }
                 }
             }

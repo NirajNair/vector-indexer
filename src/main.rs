@@ -59,7 +59,7 @@ fn main() {
     match ivf_index.search(&query_vector.1, k, n_probe) {
         Ok(results) => {
             println!("\nTop {} results:", results.len());
-            for (i, (vector_id, distance)) in results.iter().enumerate() {
+            for (i, (vector_id, distance, _)) in results.iter().enumerate() {
                 println!(
                     "  {}. Vector ID: {}, Distance: {:.6}",
                     i + 1,
@@ -82,7 +82,7 @@ fn main() {
         match ivf_index.search(&query_vector2.1, k, n_probe) {
             Ok(results) => {
                 println!("\nTop {} results:", results.len());
-                for (i, (vector_id, distance)) in results.iter().enumerate() {
+                for (i, (vector_id, distance, _)) in results.iter().enumerate() {
                     println!(
                         "  {}. Vector ID: {}, Distance: {:.6}",
                         i + 1,
