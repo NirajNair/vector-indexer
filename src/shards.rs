@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{Error, ErrorKind, Result, Write};
 use std::mem;
+use std::path::Path;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -58,11 +59,16 @@ impl Shard {
         }
     }
 
+    /// Backwards-compatible convenience wrapper that writes to `shards/`.
     pub fn save(&self) -> Result<()> {
-        fs::create_dir_all("shards")?;
+        self.save_to(Path::new("shards"))
+    }
+
+    pub fn save_to(&self, shards_dir: &Path) -> Result<()> {
+        fs::create_dir_all(shards_dir)?;
 
         // Remove existing file if it exists to avoid "File exists" error
-        let shard_path = format!("shards/shard_{}.bin", self.id);
+        let shard_path = shards_dir.join(format!("shard_{}.bin", self.id));
         let _ = fs::remove_file(&shard_path); // Ignore error if file doesn't exist
 
         let mut file = File::create(&shard_path)?;
@@ -175,7 +181,15 @@ impl Shard {
         shard_id: u64,
         centroid_ids: &[u64],
     ) -> Result<Vec<(u64, Vec<f32>, Vec<(VectorMeta, Vec<f32>)>)>> {
-        let file = File::open(format!("shards/shard_{}.bin", shard_id))?;
+        Self::get_centroid_vectors_from(Path::new("shards"), shard_id, centroid_ids)
+    }
+
+    pub fn get_centroid_vectors_from(
+        shards_dir: &Path,
+        shard_id: u64,
+        centroid_ids: &[u64],
+    ) -> Result<Vec<(u64, Vec<f32>, Vec<(VectorMeta, Vec<f32>)>)>> {
+        let file = File::open(shards_dir.join(format!("shard_{}.bin", shard_id)))?;
         let mmap = unsafe { Mmap::map(&file)? };
 
         // Read header
@@ -304,7 +318,11 @@ impl Shard {
 
     /// Load entire shard from disk
     pub fn load_from_disk(shard_id: u64) -> Result<Self> {
-        let file = File::open(format!("shards/shard_{}.bin", shard_id))?;
+        Self::load_from_disk_in(Path::new("shards"), shard_id)
+    }
+
+    pub fn load_from_disk_in(shards_dir: &Path, shard_id: u64) -> Result<Self> {
+        let file = File::open(shards_dir.join(format!("shard_{}.bin", shard_id)))?;
         let mmap = unsafe { Mmap::map(&file)? };
 
         let (header, _) = ShardHeader::ref_from_prefix(&mmap[..mem::size_of::<ShardHeader>()])
@@ -335,7 +353,8 @@ impl Shard {
         }
 
         // Read all centroids using their actual IDs
-        let cluster_data = Self::get_centroid_vectors(shard_id, &all_centroid_ids)?;
+        let cluster_data =
+            Self::get_centroid_vectors_from(shards_dir, shard_id, &all_centroid_ids)?;
 
         // Reconstruct Shard structure
         let mut centroids = Vec::new();

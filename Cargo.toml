@@ -17,3 +17,28 @@ memmap2 = "0.9"
 [dev-dependencies]
 criterion = "0.5"
 serial_test = "3.0"
+
+[features]
+# Dev-only feature to expose internal modules to this repo's integration tests.
+# Normal crate users will not enable this, so internals stay inaccessible by default.
+internal_tests = []
+
+[[test]]
+name = "integration_tests"
+path = "tests/integration_tests.rs"
+required-features = ["internal_tests"]
+
+[[test]]
+name = "ivf_index_tests"
+path = "tests/ivf_index_tests.rs"
+required-features = ["internal_tests"]
+
+[[test]]
+name = "kmeans_tests"
+path = "tests/kmeans_tests.rs"
+required-features = ["internal_tests"]
+
+[[test]]
+name = "shards_tests"
+path = "tests/shards_tests.rs"
+required-features = ["internal_tests"]

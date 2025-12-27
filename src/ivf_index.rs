@@ -6,6 +6,7 @@ use ndarray::{Array1, Axis};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{Error, ErrorKind, Read, Result, Write};
+use std::path::Path;
 
 #[derive(Clone, Serialize, Deserialize, Debug, Default)]
 pub struct Centroid {
@@ -47,7 +48,13 @@ impl IvfIndex {
         }
     }
 
+    /// Backwards-compatible convenience wrapper that writes shards to `shards/`.
     pub fn fit(&mut self, vector_store: &VectorStore) {
+        self.fit_with_paths(vector_store, Path::new("shards"))
+    }
+
+    /// Fit and write shard files to `shards_dir`.
+    pub fn fit_with_paths(&mut self, vector_store: &VectorStore, shards_dir: &Path) {
         let k = calculate_num_clusters(vector_store.data.len());
         let max_iters = calculate_max_iterations(vector_store.data.len());
         println!("Calculated k: {}, max_iters: {}", k, max_iters);
@@ -155,7 +162,7 @@ impl IvfIndex {
 
         let shards_len = shards.len();
         for shard in shards {
-            if let Err(e) = shard.save() {
+            if let Err(e) = shard.save_to(shards_dir) {
                 eprintln!("Failed to write shard {} to disk: {}", shard.id, e);
             }
         }
@@ -171,10 +178,23 @@ impl IvfIndex {
         &self,
         query: &[f32],
         k: usize,
-        n_probe: usize, // Number of centroids to search
+        n_probe: usize,
+    ) -> Result<Vec<(usize, f32, Vec<f32>)>> {
+        self.search_with_paths(query, k, n_probe, Path::new("shards"))
+    }
+
+    pub fn search_with_paths(
+        &self,
+        query: &[f32],
+        k: usize,
+        n_probe: usize,
+        shards_dir: &Path,
     ) -> Result<Vec<(usize, f32, Vec<f32>)>> {
         if k == 0 || n_probe == 0 {
-            return Err(Error::new(ErrorKind::InvalidInput, "k and n_probe must be greater than 0"));
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "k and n_probe must be greater than 0",
+            ));
         }
 
         // Find n_probe nearest centroids to query
@@ -215,7 +235,7 @@ impl IvfIndex {
 
             // Read vectors from shard
             if let Ok(cluster_data) =
-                Shard::get_centroid_vectors(shard_id as u64, &relevant_centroids)
+                Shard::get_centroid_vectors_from(shards_dir, shard_id as u64, &relevant_centroids)
             {
                 for (_, _, vectors_with_metadata) in cluster_data {
                     for (metadata, vector) in vectors_with_metadata {
@@ -231,9 +251,14 @@ impl IvfIndex {
         Ok(candidates.into_iter().take(k).collect())
     }
 
+    /// Backwards-compatible convenience wrapper that writes the index to `index/index.bin`.
     pub fn save(&self) -> Result<()> {
+        self.save_to(Path::new("index"))
+    }
+
+    pub fn save_to(&self, index_dir: &Path) -> Result<()> {
         // Create index directory if it doesn't exist
-        fs::create_dir_all("index")?;
+        fs::create_dir_all(index_dir)?;
 
         // Serialize the index
         let encoded_data = bincode::serde::encode_to_vec(self, bincode::config::standard())
@@ -241,10 +266,12 @@ impl IvfIndex {
 
         // Write to disk
         println!("Writing IVF index to disk...");
-        let mut file = File::create("index/index.bin")?;
+        let index_path = index_dir.join("index.bin");
+        let mut file = File::create(&index_path)?;
         file.write_all(&encoded_data)?;
         println!(
-            "IVF index written to index/index.bin ({} bytes)",
+            "IVF index written to {} ({} bytes)",
+            index_path.display(),
             encoded_data.len()
         );
 
@@ -252,8 +279,13 @@ impl IvfIndex {
     }
 }
 
+/// Backwards-compatible convenience wrapper that loads the index from `index/index.bin`.
 pub fn load_index() -> Result<IvfIndex> {
-    let mut file = File::open("index/index.bin")?;
+    load_index_from(Path::new("index"))
+}
+
+pub fn load_index_from(index_dir: &Path) -> Result<IvfIndex> {
+    let mut file = File::open(index_dir.join("index.bin"))?;
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)?;
 
