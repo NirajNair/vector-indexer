@@ -13,6 +13,8 @@ wide = "0.7"
 bincode = { version = "2.0.1", features = ["serde"] }
 zerocopy = { version = "0.8", features = ["derive"] }
 memmap2 = "0.9"
+serde_yaml = "0.9"
+libc = "0.2"
 
 [dev-dependencies]
 criterion = "0.5"
@@ -41,4 +43,9 @@ required-features = ["internal_tests"]
 [[test]]
 name = "shards_tests"
 path = "tests/shards_tests.rs"
+required-features = ["internal_tests"]
+
+[[bin]]
+name = "bench"
+path = "bench/main.rs"
 required-features = ["internal_tests"]

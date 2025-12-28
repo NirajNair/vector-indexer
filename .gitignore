@@ -25,5 +25,9 @@ docs
 
 index
 shards
+bench_index
+bench_data
+
+bench_results.*
 
 .DS_Store

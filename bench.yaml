@@ -1,0 +1,15 @@
+dataset:
+  dimensions: [128, 256, 768]
+  vector_counts: [100000, 500000]
+
+ivf:
+  nprobe: [8, 16, 32]
+
+queries: 10000
+k: 10
+
+concurrency: [1, 4, 8, 16]
+duration_sec: 30
+
+seed: 42
+output_prefix: "bench_results"
