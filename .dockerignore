@@ -1,0 +1,9 @@
+target/
+bench_index/
+shards/
+bench_data/
+*.bin
+.git/
+.gitignore
+.cursor/
+

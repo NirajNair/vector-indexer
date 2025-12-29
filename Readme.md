@@ -14,4 +14,34 @@ Designed as a lightweight, standalone component for building and experimenting w
 - **Custom binary storage format** with structured headers, indices, and cluster blocks
 - **SIMD-accelerated distance calculations** using the `wide` crate
 
----
+## Commands
+
+### Run all tests
+
+```bash
+docker-compose run --rm app cargo test --features internal_tests
+```
+
+### Run benchmarks (requires bench.yaml config file)
+
+```bash
+docker-compose run --rm app cargo run --release --bin bench --features internal_tests -- bench.yaml
+```
+
+### Interactive shell
+
+```bash
+docker-compose run --rm app bash
+```
+
+### Run specific test
+
+```bash
+docker-compose run --rm app cargo test --features internal_tests test_name
+```
+
+### Build the project
+
+```bash
+docker-compose run --rm app cargo build --release
+```
