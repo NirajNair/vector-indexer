@@ -86,7 +86,7 @@ pub fn build_benchmark(run: &BenchmarkRun) -> Result<BuildResult, Box<dyn std::e
 
     let start = Instant::now();
     let mut index = IvfIndex::new(run.dimension);
-    index.fit_with_paths(&store, &shards_dir_path);
+    index.fit_with_paths(&store, &shards_dir_path, run.seed);
     let build_time = start.elapsed();
 
     // Measure memory after

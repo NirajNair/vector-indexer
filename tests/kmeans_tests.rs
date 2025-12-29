@@ -14,7 +14,7 @@ fn test_basic_kmeans_runs_without_panic() {
     let data = Array2::from_shape_vec((10, 3), (0..30).map(|x| x as f32).collect()).unwrap();
     let k = 3;
 
-    let (centroids, labels) = run_kmeans_parallel(&data, k, 100, None).expect("K-means failed");
+    let (centroids, labels) = run_kmeans_parallel(&data, k, 100, None, 42).expect("K-means failed");
 
     assert_eq!(centroids.nrows(), k);
     assert_eq!(centroids.ncols(), 3);
@@ -27,7 +27,7 @@ fn test_all_labels_are_valid() {
     let data = Array2::from_shape_vec((20, 4), (0..80).map(|x| x as f32 * 0.1).collect()).unwrap();
     let k = 5;
 
-    let (_centroids, labels) = run_kmeans_parallel(&data, k, 50, None).expect("K-means failed");
+    let (_centroids, labels) = run_kmeans_parallel(&data, k, 50, None, 42).expect("K-means failed");
 
     for &label in &labels {
         assert!(label < k, "Label {} is out of bounds for k={}", label, k);
@@ -40,7 +40,7 @@ fn test_labels_assignment_is_optimal() {
     let (data, _true_labels) = create_gaussian_clusters(3, 20, 4, 10.0);
 
     let (centroids, labels) =
-        run_kmeans_parallel(&data, 3, 100, Some(1e-6)).expect("K-means failed");
+        run_kmeans_parallel(&data, 3, 100, Some(1e-6), 42).expect("K-means failed");
 
     assert!(
         verify_optimal_assignment(&data, &centroids, &labels),
@@ -59,7 +59,7 @@ fn test_single_cluster() {
     let data = Array2::from_shape_vec((20, 3), (0..60).map(|x| x as f32).collect()).unwrap();
     let k = 1;
 
-    let (centroids, labels) = run_kmeans_parallel(&data, k, 50, None).expect("K-means failed");
+    let (centroids, labels) = run_kmeans_parallel(&data, k, 50, None, 42).expect("K-means failed");
 
     assert_eq!(centroids.nrows(), 1);
     assert!(
@@ -83,7 +83,7 @@ fn test_k_equals_n() {
     let data = Array2::from_shape_vec((10, 3), (0..30).map(|x| x as f32 * 2.0).collect()).unwrap();
     let k = 10;
 
-    let (centroids, labels) = run_kmeans_parallel(&data, k, 100, None).expect("K-means failed");
+    let (centroids, labels) = run_kmeans_parallel(&data, k, 100, None, 42).expect("K-means failed");
 
     assert_eq!(centroids.nrows(), k);
     assert_eq!(labels.len(), 10);
@@ -106,7 +106,7 @@ fn test_high_dimensional_data() {
     .unwrap();
     let k = 10;
 
-    let (centroids, labels) = run_kmeans_parallel(&data, k, 50, None).expect("K-means failed");
+    let (centroids, labels) = run_kmeans_parallel(&data, k, 50, None, 42).expect("K-means failed");
 
     assert_eq!(centroids.nrows(), k);
     assert_eq!(centroids.ncols(), dim);
@@ -127,7 +127,7 @@ fn test_identical_points_handled_correctly() {
     let k = 2;
 
     let (centroids, labels) =
-        run_kmeans_parallel(&data, k, 100, Some(1e-5)).expect("K-means failed");
+        run_kmeans_parallel(&data, k, 100, Some(1e-5), 42).expect("K-means failed");
 
     assert_eq!(centroids.nrows(), k);
     assert_eq!(labels.len(), 5);
@@ -155,7 +155,7 @@ fn test_very_small_dataset() {
     .unwrap();
     let k = 2;
 
-    let (centroids, labels) = run_kmeans_parallel(&data, k, 50, None).expect("K-means failed");
+    let (centroids, labels) = run_kmeans_parallel(&data, k, 50, None, 42).expect("K-means failed");
 
     assert_eq!(centroids.nrows(), k);
     assert_eq!(labels.len(), 5);
@@ -180,12 +180,12 @@ fn test_convergence_improves_clustering() {
 
     // Run with few iterations
     let (centroids_few, labels_few) =
-        run_kmeans_parallel(&data, 3, 5, None).expect("K-means failed");
+        run_kmeans_parallel(&data, 3, 5, None, 42).expect("K-means failed");
     let inertia_few = calculate_inertia(&data, &centroids_few, &labels_few);
 
     // Run with many iterations
     let (centroids_many, labels_many) =
-        run_kmeans_parallel(&data, 3, 100, Some(1e-6)).expect("K-means failed");
+        run_kmeans_parallel(&data, 3, 100, Some(1e-6), 42).expect("K-means failed");
     let inertia_many = calculate_inertia(&data, &centroids_many, &labels_many);
 
     // More iterations should lead to lower or equal inertia
@@ -211,9 +211,9 @@ fn test_deterministic_with_same_initialization() {
     let k1 = 5;
 
     let (centroids1a, labels1a) =
-        run_kmeans_parallel(&data1, k1, 50, Some(1e-4)).expect("First run failed");
+        run_kmeans_parallel(&data1, k1, 50, Some(1e-4), 42).expect("First run failed");
     let (centroids1b, labels1b) =
-        run_kmeans_parallel(&data1, k1, 50, Some(1e-4)).expect("Second run failed");
+        run_kmeans_parallel(&data1, k1, 50, Some(1e-4), 42).expect("Second run failed");
 
     assert_eq!(centroids1a.nrows(), k1);
     assert_eq!(centroids1b.nrows(), k1);
@@ -244,9 +244,9 @@ fn test_deterministic_with_same_initialization() {
     let k2 = 10;
 
     let (centroids2a, labels2a) =
-        run_kmeans_parallel(&data2, k2, 50, Some(1e-4)).expect("First run failed");
+        run_kmeans_parallel(&data2, k2, 50, Some(1e-4), 42).expect("First run failed");
     let (centroids2b, labels2b) =
-        run_kmeans_parallel(&data2, k2, 50, Some(1e-4)).expect("Second run failed");
+        run_kmeans_parallel(&data2, k2, 50, Some(1e-4), 42).expect("Second run failed");
 
     assert_eq!(centroids2a.nrows(), k2);
     assert_eq!(centroids2b.nrows(), k2);
@@ -277,9 +277,9 @@ fn test_deterministic_with_same_initialization() {
     let k3 = 15;
 
     let (centroids3a, labels3a) =
-        run_kmeans_parallel(&data3, k3, 50, Some(1e-4)).expect("First run failed");
+        run_kmeans_parallel(&data3, k3, 50, Some(1e-4), 42).expect("First run failed");
     let (centroids3b, labels3b) =
-        run_kmeans_parallel(&data3, k3, 50, Some(1e-4)).expect("Second run failed");
+        run_kmeans_parallel(&data3, k3, 50, Some(1e-4), 42).expect("Second run failed");
 
     assert_eq!(centroids3a.nrows(), k3);
     assert_eq!(centroids3b.nrows(), k3);
@@ -332,7 +332,7 @@ fn test_well_separated_clusters_are_recovered() {
     let (data, true_labels) = create_gaussian_clusters(3, 40, 4, 25.0);
 
     let (centroids, predicted_labels) =
-        run_kmeans_parallel(&data, 3, 100, Some(1e-5)).expect("K-means failed");
+        run_kmeans_parallel(&data, 3, 100, Some(1e-5), 42).expect("K-means failed");
 
     // We can't directly compare labels (they might be permuted)
     // Instead, check that points from the same true cluster are assigned to the same predicted cluster
@@ -377,7 +377,7 @@ fn test_clustering_quality_metric() {
     // Verify that inertia is calculated correctly
     let (data, _) = create_gaussian_clusters(2, 30, 3, 15.0);
     let (centroids, labels) =
-        run_kmeans_parallel(&data, 2, 100, Some(1e-5)).expect("K-means failed");
+        run_kmeans_parallel(&data, 2, 100, Some(1e-5), 42).expect("K-means failed");
 
     let inertia = calculate_inertia(&data, &centroids, &labels);
 
@@ -406,7 +406,7 @@ fn test_large_dataset() {
     .unwrap();
 
     let (centroids, labels) =
-        run_kmeans_parallel(&data, k, 50, Some(1e-4)).expect("K-means failed");
+        run_kmeans_parallel(&data, k, 50, Some(1e-4), 42).expect("K-means failed");
 
     assert_eq!(centroids.nrows(), k);
     assert_eq!(centroids.ncols(), dim);
@@ -430,7 +430,7 @@ fn test_many_clusters() {
     .unwrap();
 
     let (centroids, labels) =
-        run_kmeans_parallel(&data, k, 50, Some(1e-4)).expect("K-means failed");
+        run_kmeans_parallel(&data, k, 50, Some(1e-4), 42).expect("K-means failed");
 
     assert_eq!(centroids.nrows(), k);
     assert_eq!(centroids.ncols(), dim);
@@ -456,7 +456,7 @@ fn test_mini_batch_kmeans_basic() {
     let k = 3;
 
     let (centroids, labels) =
-        run_kmeans_mini_batch(&data, k, 100, None).expect("Mini-batch K-means failed");
+        run_kmeans_mini_batch(&data, k, 100, None, 42).expect("Mini-batch K-means failed");
 
     assert_eq!(centroids.nrows(), k);
     assert_eq!(centroids.ncols(), 3);
@@ -470,7 +470,7 @@ fn test_mini_batch_kmeans_labels_valid() {
     let k = 5;
 
     let (_centroids, labels) =
-        run_kmeans_mini_batch(&data, k, 50, None).expect("Mini-batch K-means failed");
+        run_kmeans_mini_batch(&data, k, 50, None, 42).expect("Mini-batch K-means failed");
 
     for &label in &labels {
         assert!(label < k, "Label {} is out of bounds for k={}", label, k);
@@ -483,7 +483,7 @@ fn test_mini_batch_kmeans_optimal_assignment() {
     let (data, _true_labels) = create_gaussian_clusters(3, 40, 4, 25.0);
 
     let (centroids, labels) =
-        run_kmeans_mini_batch(&data, 3, 100, Some(1e-5)).expect("Mini-batch K-means failed");
+        run_kmeans_mini_batch(&data, 3, 100, Some(1e-5), 42).expect("Mini-batch K-means failed");
 
     assert!(
         verify_optimal_assignment(&data, &centroids, &labels),
@@ -497,7 +497,7 @@ fn test_mini_batch_kmeans_separated_clusters() {
     let (data, _true_labels) = create_gaussian_clusters(3, 50, 4, 30.0);
 
     let (centroids, labels) =
-        run_kmeans_mini_batch(&data, 3, 100, Some(1e-4)).expect("Mini-batch K-means failed");
+        run_kmeans_mini_batch(&data, 3, 100, Some(1e-4), 42).expect("Mini-batch K-means failed");
 
     // Verify optimal assignment
     assert!(verify_optimal_assignment(&data, &centroids, &labels));
@@ -527,7 +527,7 @@ fn test_mini_batch_kmeans_large_dataset() {
     .unwrap();
 
     let (centroids, labels) =
-        run_kmeans_mini_batch(&data, k, 50, Some(1e-4)).expect("Mini-batch K-means failed");
+        run_kmeans_mini_batch(&data, k, 50, Some(1e-4), 42).expect("Mini-batch K-means failed");
 
     assert_eq!(centroids.nrows(), k);
     assert_eq!(centroids.ncols(), dim);
@@ -545,9 +545,9 @@ fn test_mini_batch_vs_full_batch_quality() {
 
     // Run both algorithms
     let (centroids_full, labels_full) =
-        run_kmeans_parallel(&data, k, 100, Some(1e-5)).expect("Full-batch K-means failed");
+        run_kmeans_parallel(&data, k, 100, Some(1e-5), 42).expect("Full-batch K-means failed");
     let (centroids_mini, labels_mini) =
-        run_kmeans_mini_batch(&data, k, 100, Some(1e-5)).expect("Mini-batch K-means failed");
+        run_kmeans_mini_batch(&data, k, 100, Some(1e-5), 42).expect("Mini-batch K-means failed");
 
     // Calculate inertia for both
     let inertia_full = calculate_inertia(&data, &centroids_full, &labels_full);
@@ -584,7 +584,7 @@ fn test_mini_batch_kmeans_small_dataset() {
     let data = Array2::from_shape_vec((20, 3), (0..60).map(|x| x as f32 * 0.5).collect()).unwrap();
     let k = 3;
 
-    let (centroids, labels) = run_kmeans_mini_batch(&data, k, 50, None)
+    let (centroids, labels) = run_kmeans_mini_batch(&data, k, 50, None, 42)
         .expect("Mini-batch K-means failed on small dataset");
 
     assert_eq!(centroids.nrows(), k);
@@ -599,7 +599,7 @@ fn test_mini_batch_with_single_cluster() {
     let k = 1;
 
     let (centroids, labels) =
-        run_kmeans_mini_batch(&data, k, 50, None).expect("Mini-batch K-means failed");
+        run_kmeans_mini_batch(&data, k, 50, None, 42).expect("Mini-batch K-means failed");
 
     assert_eq!(centroids.nrows(), 1);
     assert_eq!(labels.len(), 50);
@@ -637,7 +637,7 @@ fn test_mini_batch_kmeans_large_k() {
     )
     .unwrap();
 
-    let (centroids, labels) = run_kmeans_mini_batch(&data, k, 30, Some(1e-4))
+    let (centroids, labels) = run_kmeans_mini_batch(&data, k, 30, Some(1e-4), 42)
         .expect("Mini-batch K-means failed with large k");
 
     assert_eq!(centroids.nrows(), k);
@@ -657,7 +657,7 @@ fn test_hierarchical_vs_brute_force_quality() {
     let k_small = 25;
 
     let (centroids_small, labels_small) =
-        run_kmeans_mini_batch(&data_small, k_small, 50, Some(1e-5))
+        run_kmeans_mini_batch(&data_small, k_small, 50, Some(1e-5), 42)
             .expect("Brute force K-means failed");
 
     assert_eq!(centroids_small.nrows(), k_small);
@@ -672,7 +672,7 @@ fn test_hierarchical_vs_brute_force_quality() {
     let k_large = 150;
 
     let (centroids_large, labels_large) =
-        run_kmeans_mini_batch(&data_large, k_large, 50, Some(1e-4))
+        run_kmeans_mini_batch(&data_large, k_large, 50, Some(1e-4), 42)
             .expect("Hierarchical K-means failed");
 
     assert_eq!(centroids_large.nrows(), k_large);
@@ -690,8 +690,8 @@ fn test_hierarchical_assignment_accuracy() {
     let (data, _) = create_gaussian_clusters(10, 100, 8, 25.0);
     let k = 150;
 
-    let (centroids, labels) =
-        run_kmeans_mini_batch(&data, k, 50, Some(1e-4)).expect("Hierarchical assignment failed");
+    let (centroids, labels) = run_kmeans_mini_batch(&data, k, 50, Some(1e-4), 42)
+        .expect("Hierarchical assignment failed");
 
     // Should still maintain optimal assignment
     assert!(verify_optimal_assignment(&data, &centroids, &labels));
@@ -705,7 +705,7 @@ fn test_kmeans_plus_plus_initialization() {
 
     // Run K-means with early stopping
     let (centroids, labels) =
-        run_kmeans_parallel(&data, k, 20, Some(1e-3)).expect("K-means failed");
+        run_kmeans_parallel(&data, k, 20, Some(1e-3), 42).expect("K-means failed");
 
     assert_eq!(centroids.nrows(), k);
 
@@ -735,7 +735,7 @@ fn test_kmeans_plus_plus_initialization() {
 fn test_empty_data_returns_error() {
     // Error case: Empty data should return an error
     let data = Array2::<f32>::zeros((0, 5));
-    let result = run_kmeans_parallel(&data, 3, 100, None);
+    let result = run_kmeans_parallel(&data, 3, 100, None, 42);
 
     assert!(result.is_err(), "Empty data should return an error");
 }
@@ -754,7 +754,7 @@ fn test_k_larger_than_n_handled() {
 
     // This might succeed with empty clusters or fail gracefully
     // Either behavior is acceptable, but should not panic
-    let result = run_kmeans_parallel(&data, k, 50, None);
+    let result = run_kmeans_parallel(&data, k, 50, None, 42);
 
     match result {
         Ok((centroids, labels)) => {
@@ -785,7 +785,7 @@ fn test_parallel_execution_produces_valid_results() {
     // Run multiple times
     for _ in 0..3 {
         let (centroids, labels) =
-            run_kmeans_parallel(&data, k, 50, Some(1e-4)).expect("K-means failed");
+            run_kmeans_parallel(&data, k, 50, Some(1e-4), 42).expect("K-means failed");
 
         // Each run should produce valid results
         assert_eq!(centroids.nrows(), k);

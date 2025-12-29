@@ -408,7 +408,7 @@ fn test_kmeans_to_shards_integration() {
     // Run K-means directly
     let k = 10;
     let (centroids, labels) =
-        run_kmeans_mini_batch(&vectors, k, 100, Some(1e-4)).expect("K-means failed");
+        run_kmeans_mini_batch(&vectors, k, 100, Some(1e-4), 42).expect("K-means failed");
 
     // Verify all points are assigned to nearest centroid
     assert!(verify_optimal_assignment(&vectors, &centroids, &labels));

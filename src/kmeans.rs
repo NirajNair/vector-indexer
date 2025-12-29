@@ -2,8 +2,8 @@ use ndarray::Array1;
 use ndarray::Array2;
 use rand::distributions::WeightedIndex;
 use rand::prelude::*;
-use rand::thread_rng;
-use rand::Rng;
+use rand::rngs::StdRng;
+use rand::SeedableRng;
 use rayon::prelude::*;
 use std::io::{Error, ErrorKind};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -17,6 +17,7 @@ pub fn run_kmeans_parallel(
     k: usize,                          // number of clusters
     max_iters: usize,                  // maximum iterations
     early_stop_threshold: Option<f32>, // early stop threshold
+    seed: u64,                         // seed for deterministic initialization
 ) -> Result<(Array2<f32>, Array1<usize>), Error> {
     let early_stop_threshold = early_stop_threshold.unwrap_or(1e-4);
     if data.is_empty() {
@@ -27,16 +28,16 @@ pub fn run_kmeans_parallel(
     }
     let n = data.nrows();
     let dim = data.ncols();
-    let mut rng = thread_rng();
+    let mut rng = StdRng::seed_from_u64(seed);
 
-    let mut curr_centroids = kmeans_plus_plus_init(&data, k);
+    let mut curr_centroids = kmeans_plus_plus_init(&data, k, seed);
     let mut labels = vec![0usize; n];
 
     for iter in 0..max_iters {
         println!("Iteration {iter}...");
 
         // Assignment (parallel + SIMD)
-        assign_points_simd_parallel(&data, &curr_centroids, &mut labels);
+        assign_points_simd_parallel(&data, &curr_centroids, &mut labels, seed);
 
         // Update (parallel reduction)
         let (mut new_centroids, counts) = update_centroids_parallel(&data, &labels, k, dim);
@@ -65,6 +66,7 @@ pub fn run_kmeans_mini_batch(
     k: usize,                          // number of clusters
     max_iters: usize,                  // maximum iterations
     early_stop_threshold: Option<f32>, // early stop threshold
+    seed: u64,                         // seed for deterministic initialization
 ) -> Result<(Array2<f32>, Array1<usize>), Error> {
     let early_stop_threshold = early_stop_threshold.unwrap_or(1e-4);
     if data.is_empty() {
@@ -75,7 +77,7 @@ pub fn run_kmeans_mini_batch(
     }
     let n = data.nrows();
     let dim = data.ncols();
-    let mut rng = thread_rng();
+    let mut rng = StdRng::seed_from_u64(seed);
 
     // Auto-calculate batch size
     let batch_size = std::cmp::min(256, std::cmp::max(10, (n as f32).sqrt() as usize));
@@ -85,7 +87,7 @@ pub fn run_kmeans_mini_batch(
     );
 
     // Initialize centroids using K-means++
-    let mut curr_centroids = kmeans_plus_plus_init(&data, k);
+    let mut curr_centroids = kmeans_plus_plus_init(&data, k, seed);
     let mut per_cluster_counts = vec![0usize; k];
 
     // Track previous centroids for convergence check
@@ -142,31 +144,31 @@ pub fn run_kmeans_mini_batch(
     // Final assignment: assign all points to final centroids
     println!("Final assignment of all points...");
     let mut final_labels = vec![0usize; n];
-    assign_points_simd_parallel(&data, &curr_centroids, &mut final_labels);
+    assign_points_simd_parallel(&data, &curr_centroids, &mut final_labels, seed);
 
     Ok((curr_centroids, Array1::from_vec(final_labels)))
 }
 
 /// Fast approximate K-means++ using sampling for large datasets
 /// Uses exact K-means++ for small datasets, switches to sampling for large ones
-fn kmeans_plus_plus_init(data: &Array2<f32>, k: usize) -> Array2<f32> {
+fn kmeans_plus_plus_init(data: &Array2<f32>, k: usize, seed: u64) -> Array2<f32> {
     let n = data.nrows();
 
     // Use sampling-based approach for large datasets
     let sample_threshold = 50000;
     if n > sample_threshold {
-        kmeans_plus_plus_init_sampled(data, k, sample_threshold)
+        kmeans_plus_plus_init_sampled(data, k, sample_threshold, seed)
     } else {
-        kmeans_plus_plus_init_exact(data, k)
+        kmeans_plus_plus_init_exact(data, k, seed)
     }
 }
 
 /// Exact K-means++ initialization (for smaller datasets)
-fn kmeans_plus_plus_init_exact(data: &Array2<f32>, k: usize) -> Array2<f32> {
+fn kmeans_plus_plus_init_exact(data: &Array2<f32>, k: usize, seed: u64) -> Array2<f32> {
     let n = data.nrows();
     let dim = data.ncols();
-    let mut rng = thread_rng();
-    
+    let mut rng = StdRng::seed_from_u64(seed);
+
     // If k >= n, use all data points as centroids and duplicate some if needed
     let actual_k = k.min(n);
     let mut centroids = Array2::<f32>::zeros((k, dim));
@@ -186,7 +188,7 @@ fn kmeans_plus_plus_init_exact(data: &Array2<f32>, k: usize) -> Array2<f32> {
 
         // Choose next centroid with probability proportional to distance²
         let weights: Vec<f32> = min_distances.iter().map(|&d| d * d).collect();
-        
+
         // Check if all weights are zero (all points already selected)
         let total_weight: f32 = weights.iter().sum();
         if total_weight == 0.0 {
@@ -194,9 +196,13 @@ fn kmeans_plus_plus_init_exact(data: &Array2<f32>, k: usize) -> Array2<f32> {
             let dup_idx = rng.gen_range(0..i);
             let dup_row = centroids.row(dup_idx).to_owned();
             centroids.row_mut(i).assign(&dup_row);
-            println!("K-means++: Selected centroid {} (duplicate of centroid {})", i, dup_idx);
+            println!(
+                "K-means++: Selected centroid {} (duplicate of centroid {})",
+                i, dup_idx
+            );
         } else {
-            let dist = WeightedIndex::new(&weights).expect("Failed to create weighted distribution");
+            let dist =
+                WeightedIndex::new(&weights).expect("Failed to create weighted distribution");
             let chosen_idx = dist.sample(&mut rng);
 
             centroids.row_mut(i).assign(&data.row(chosen_idx));
@@ -206,13 +212,16 @@ fn kmeans_plus_plus_init_exact(data: &Array2<f32>, k: usize) -> Array2<f32> {
             );
         }
     }
-    
+
     // If k > n, fill remaining centroids by duplicating existing ones
     for i in actual_k..k {
         let dup_idx = rng.gen_range(0..actual_k);
         let dup_row = centroids.row(dup_idx).to_owned();
         centroids.row_mut(i).assign(&dup_row);
-        println!("K-means++: Selected centroid {} (duplicate of centroid {})", i, dup_idx);
+        println!(
+            "K-means++: Selected centroid {} (duplicate of centroid {})",
+            i, dup_idx
+        );
     }
 
     centroids
@@ -220,11 +229,16 @@ fn kmeans_plus_plus_init_exact(data: &Array2<f32>, k: usize) -> Array2<f32> {
 
 /// Approximate K-means++ using sampling (for large datasets)
 /// Much faster while maintaining good initialization quality
-fn kmeans_plus_plus_init_sampled(data: &Array2<f32>, k: usize, sample_size: usize) -> Array2<f32> {
+fn kmeans_plus_plus_init_sampled(
+    data: &Array2<f32>,
+    k: usize,
+    sample_size: usize,
+    seed: u64,
+) -> Array2<f32> {
     let n = data.nrows();
     let dim = data.ncols();
-    let mut rng = thread_rng();
-    
+    let mut rng = StdRng::seed_from_u64(seed);
+
     // If k >= n, use exact method instead
     let actual_k = k.min(n);
     let mut centroids = Array2::<f32>::zeros((k, dim));
@@ -255,7 +269,7 @@ fn kmeans_plus_plus_init_sampled(data: &Array2<f32>, k: usize, sample_size: usiz
 
         // Choose next centroid from sampled points
         let weights: Vec<f32> = min_distances.iter().map(|&d| d * d).collect();
-        
+
         // Check if all weights are zero
         let total_weight: f32 = weights.iter().sum();
         if total_weight == 0.0 {
@@ -263,9 +277,13 @@ fn kmeans_plus_plus_init_sampled(data: &Array2<f32>, k: usize, sample_size: usiz
             let dup_idx = rng.gen_range(0..i);
             let dup_row = centroids.row(dup_idx).to_owned();
             centroids.row_mut(i).assign(&dup_row);
-            println!("K-means++: Selected centroid {} (duplicate of centroid {})", i, dup_idx);
+            println!(
+                "K-means++: Selected centroid {} (duplicate of centroid {})",
+                i, dup_idx
+            );
         } else {
-            let dist = WeightedIndex::new(&weights).expect("Failed to create weighted distribution");
+            let dist =
+                WeightedIndex::new(&weights).expect("Failed to create weighted distribution");
             let sample_idx = dist.sample(&mut rng);
             let chosen_idx = sample_indices[sample_idx];
 
@@ -276,13 +294,16 @@ fn kmeans_plus_plus_init_sampled(data: &Array2<f32>, k: usize, sample_size: usiz
             );
         }
     }
-    
+
     // If k > n, fill remaining centroids by duplicating existing ones
     for i in actual_k..k {
         let dup_idx = rng.gen_range(0..actual_k);
         let dup_row = centroids.row(dup_idx).to_owned();
         centroids.row_mut(i).assign(&dup_row);
-        println!("K-means++: Selected centroid {} (duplicate of centroid {})", i, dup_idx);
+        println!(
+            "K-means++: Selected centroid {} (duplicate of centroid {})",
+            i, dup_idx
+        );
     }
 
     centroids
@@ -293,7 +314,7 @@ fn handle_empty_clusters(
     centroids: &mut Array2<f32>,
     counts: &[usize],
     data: &Array2<f32>,
-    rng: &mut ThreadRng,
+    rng: &mut StdRng,
 ) {
     let k = centroids.nrows();
     let dim = centroids.ncols();
@@ -421,12 +442,17 @@ fn update_min_distances_parallel(
         });
 }
 
-fn assign_points_simd_parallel(data: &Array2<f32>, centroids: &Array2<f32>, labels: &mut [usize]) {
+fn assign_points_simd_parallel(
+    data: &Array2<f32>,
+    centroids: &Array2<f32>,
+    labels: &mut [usize],
+    seed: u64,
+) {
     let k = centroids.nrows();
 
     // Use hierarchical assignment for large k (better performance)
     if k > 100 {
-        assign_points_hierarchical(data, centroids, labels);
+        assign_points_hierarchical(data, centroids, labels, seed);
     } else {
         assign_points_brute_force(data, centroids, labels);
     }
@@ -445,7 +471,12 @@ fn assign_points_brute_force(data: &Array2<f32>, centroids: &Array2<f32>, labels
 
 /// Hierarchical assignment for large k (much faster for k > 100)
 /// Reduces O(k) comparisons to O(sqrt(k)) per point
-fn assign_points_hierarchical(data: &Array2<f32>, centroids: &Array2<f32>, labels: &mut [usize]) {
+fn assign_points_hierarchical(
+    data: &Array2<f32>,
+    centroids: &Array2<f32>,
+    labels: &mut [usize],
+    seed: u64,
+) {
     let k = centroids.nrows();
     let dim = centroids.ncols();
     let n = data.nrows();
@@ -459,7 +490,10 @@ fn assign_points_hierarchical(data: &Array2<f32>, centroids: &Array2<f32>, label
 
     // Build hierarchy: cluster the centroids themselves
     let start = std::time::Instant::now();
-    let (meta_centroids, centroid_to_meta) = build_centroid_hierarchy(centroids, meta_k);
+    // Use a derived seed for hierarchy building to ensure determinism
+    let hierarchy_seed = seed.wrapping_mul(17).wrapping_add(42);
+    let (meta_centroids, centroid_to_meta) =
+        build_centroid_hierarchy(centroids, meta_k, hierarchy_seed);
     println!(
         "  Hierarchy built in {:?} ({} meta-centroids)",
         start.elapsed(),
@@ -547,10 +581,14 @@ fn assign_points_hierarchical(data: &Array2<f32>, centroids: &Array2<f32>, label
 }
 
 /// Build a 2-level hierarchy by clustering the centroids
-fn build_centroid_hierarchy(centroids: &Array2<f32>, meta_k: usize) -> (Array2<f32>, Vec<usize>) {
+fn build_centroid_hierarchy(
+    centroids: &Array2<f32>,
+    meta_k: usize,
+    seed: u64,
+) -> (Array2<f32>, Vec<usize>) {
     let k = centroids.nrows();
     let dim = centroids.ncols();
-    let mut rng = thread_rng();
+    let mut rng = StdRng::seed_from_u64(seed);
 
     // Initialize meta-centroids randomly from centroids
     let mut meta_centroids = Array2::<f32>::zeros((meta_k, dim));
@@ -681,7 +719,7 @@ fn update_centroids_parallel(
 }
 
 /// Sample a random batch of indices without replacement
-fn sample_batch(n: usize, batch_size: usize, rng: &mut ThreadRng) -> Vec<usize> {
+fn sample_batch(n: usize, batch_size: usize, rng: &mut StdRng) -> Vec<usize> {
     let mut indices: Vec<usize> = (0..n).collect();
     indices.shuffle(rng);
     indices.into_iter().take(batch_size).collect()

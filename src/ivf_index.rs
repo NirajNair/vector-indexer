@@ -51,11 +51,11 @@ impl IvfIndex {
 
     /// Backwards-compatible convenience wrapper that writes shards to `shards/`.
     pub fn fit(&mut self, vector_store: &VectorStore) {
-        self.fit_with_paths(vector_store, Path::new("shards"))
+        self.fit_with_paths(vector_store, Path::new("shards"), 42)
     }
 
     /// Fit and write shard files to `shards_dir`.
-    pub fn fit_with_paths(&mut self, vector_store: &VectorStore, shards_dir: &Path) {
+    pub fn fit_with_paths(&mut self, vector_store: &VectorStore, shards_dir: &Path, seed: u64) {
         let k = calculate_num_clusters(vector_store.data.len());
         let max_iters = calculate_max_iterations(vector_store.data.len());
         println!("Calculated k: {}, max_iters: {}", k, max_iters);
@@ -67,8 +67,8 @@ impl IvfIndex {
             vector_arr.ncols()
         );
 
-        let (centroids_arr, labels) =
-            run_kmeans_mini_batch(&vector_arr, k, max_iters, None).expect("Failed to run KMeans");
+        let (centroids_arr, labels) = run_kmeans_mini_batch(&vector_arr, k, max_iters, None, seed)
+            .expect("Failed to run KMeans");
 
         println!(
             "Centroids shape: {}x{}",
@@ -102,8 +102,10 @@ impl IvfIndex {
 
         // Run kmeans to find super centroids to group similar centroids together
         let num_shards = (centroids.len() as f32).sqrt().ceil() as usize;
+        // Use a derived seed for super centroids to ensure determinism while being different from main centroids
+        let super_seed = seed.wrapping_mul(31).wrapping_add(7);
         let (super_centroids, super_centroid_labels) =
-            run_kmeans_mini_batch(&centroids_arr, num_shards, 100, None)
+            run_kmeans_mini_batch(&centroids_arr, num_shards, 100, None, super_seed)
                 .expect("Failed to run kmeans");
 
         println!(

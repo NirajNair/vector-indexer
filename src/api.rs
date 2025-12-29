@@ -139,7 +139,8 @@ impl VectorIndexer {
             .collect();
 
         let store = VectorStore::new(vectors_data);
-        self.index.fit_with_paths(&store, &self.cfg.shards_dir);
+        // Use default seed for API builds (deterministic but not configurable via API)
+        self.index.fit_with_paths(&store, &self.cfg.shards_dir, 42);
         self.index.save_to(&self.cfg.index_dir)?;
         Ok(self)
     }
@@ -178,7 +179,8 @@ impl VectorIndexer {
         }
 
         let store = VectorStore::new(vectors);
-        self.index.fit_with_paths(&store, &self.cfg.shards_dir);
+        // Use default seed for API builds (deterministic but not configurable via API)
+        self.index.fit_with_paths(&store, &self.cfg.shards_dir, 42);
         self.index.save_to(&self.cfg.index_dir)?;
         Ok(self)
     }
