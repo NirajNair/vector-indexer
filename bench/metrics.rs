@@ -80,57 +80,18 @@ impl Default for LatencyHistogram {
 
 /// Measure RSS (Resident Set Size) memory usage in bytes
 pub fn measure_rss() -> Result<u64, Box<dyn std::error::Error>> {
-    #[cfg(target_os = "linux")]
-    {
-        use std::fs;
-        let status = fs::read_to_string("/proc/self/status")?;
-        for line in status.lines() {
-            if line.starts_with("VmRSS:") {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 2 {
-                    let kb: u64 = parts[1].parse()?;
-                    return Ok(kb * 1024); // Convert KB to bytes
-                }
+    use std::fs;
+    let status = fs::read_to_string("/proc/self/status")?;
+    for line in status.lines() {
+        if line.starts_with("VmRSS:") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                let kb: u64 = parts[1].parse()?;
+                return Ok(kb * 1024); // Convert KB to bytes
             }
         }
-        Err("VmRSS not found in /proc/self/status".into())
     }
-
-    #[cfg(target_os = "macos")]
-    {
-        // On macOS, use task_info system call
-        // This is a simplified approach - for more accurate measurement,
-        // consider using the sysinfo crate or mach system calls
-        #[allow(deprecated)]
-        use libc::{mach_task_basic_info, mach_task_self, task_info, KERN_SUCCESS, MACH_TASK_BASIC_INFO};
-        use std::mem;
-
-        let mut info: mach_task_basic_info = unsafe { mem::zeroed() };
-        let mut count = (mem::size_of::<mach_task_basic_info>() / mem::size_of::<u32>()) as u32;
-
-        let result = unsafe {
-            task_info(
-                mach_task_self(),
-                MACH_TASK_BASIC_INFO,
-                &mut info as *mut _ as *mut i32,
-                &mut count,
-            )
-        };
-
-        if result == KERN_SUCCESS {
-            // resident_size is in bytes
-            Ok(info.resident_size as u64)
-        } else {
-            // Fallback: return 0 if measurement fails
-            eprintln!("Warning: Could not measure RSS on macOS, returning 0");
-            Ok(0)
-        }
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        Err("RSS measurement not supported on this platform".into())
-    }
+    Err("VmRSS not found in /proc/self/status".into())
 }
 
 /// Compute basic statistics from a slice of values
@@ -142,11 +103,8 @@ pub fn compute_stats(values: &[f64]) -> (f64, f64, f64) {
     let sum: f64 = values.iter().sum();
     let mean = sum / values.len() as f64;
 
-    let variance: f64 = values
-        .iter()
-        .map(|x| (x - mean).powi(2))
-        .sum::<f64>()
-        / values.len() as f64;
+    let variance: f64 =
+        values.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / values.len() as f64;
     let std_dev = variance.sqrt();
 
     let min = values.iter().fold(f64::INFINITY, |a, &b| a.min(b));
@@ -154,4 +112,3 @@ pub fn compute_stats(values: &[f64]) -> (f64, f64, f64) {
 
     (mean, std_dev, max - min) // mean, std_dev, range
 }
-

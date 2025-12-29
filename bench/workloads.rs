@@ -1,13 +1,13 @@
 use crate::config::BenchmarkRun;
 use crate::dataset::{ensure_dataset, get_file_size, load_dataset};
 use crate::metrics::{measure_rss, LatencyHistogram};
+use std::path::PathBuf;
+use std::sync::{mpsc, Arc, Barrier};
+use std::thread;
+use std::time::{Duration, Instant};
 use vector_indexer::ivf_index::{load_index_from, IvfIndex};
 use vector_indexer::utils::{calculate_num_clusters, euclidean_distance_squared};
 use vector_indexer::vector_store::VectorStore;
-use std::path::PathBuf;
-use std::sync::{Arc, Barrier};
-use std::thread;
-use std::time::{Duration, Instant};
 
 /// Result from build benchmark
 #[derive(Debug, Clone)]
@@ -128,7 +128,10 @@ pub fn latency_benchmark(
     run: &BenchmarkRun,
     query_vectors: &[Vec<f32>],
 ) -> Result<LatencyResult, Box<dyn std::error::Error>> {
-    eprintln!("Running latency benchmark with {} queries", query_vectors.len());
+    eprintln!(
+        "Running latency benchmark with {} queries",
+        query_vectors.len()
+    );
 
     // Load index
     let index_dir_path = index_dir(run);
@@ -138,14 +141,31 @@ pub fn latency_benchmark(
     // Warmup: run a few queries to warm OS cache
     let warmup_count = 10.min(query_vectors.len());
     for query in query_vectors.iter().take(warmup_count) {
-        let _ = index.search_with_paths(query, run.k, run.nprobe, &shards_dir_path);
+        let (tx, rx) = mpsc::channel();
+        tokio_uring::start(async {
+            let _ = index
+                .search_with_paths(query, run.k, run.nprobe, &shards_dir_path)
+                .await;
+            tx.send(()).unwrap();
+        });
+        let _ = rx.recv();
     }
 
     // Measure latency for each query
     let mut histogram = LatencyHistogram::new();
     for query in query_vectors {
+        let (tx, rx) = mpsc::channel();
         let start = Instant::now();
-        let _ = index.search_with_paths(query, run.k, run.nprobe, &shards_dir_path)?;
+        tokio_uring::start(async {
+            match index
+                .search_with_paths(query, run.k, run.nprobe, &shards_dir_path)
+                .await
+            {
+                Ok(_) => tx.send(Ok(())).unwrap(),
+                Err(e) => tx.send(Err(e)).unwrap(),
+            }
+        });
+        rx.recv().unwrap()?;
         let elapsed = start.elapsed();
         histogram.record_duration(elapsed);
     }
@@ -211,7 +231,12 @@ pub fn throughput_benchmark(
                 query_idx += 1;
 
                 let query_start = Instant::now();
-                let _ = index.search_with_paths(query, k, nprobe, &shards_dir);
+                let (tx, rx) = mpsc::channel();
+                tokio_uring::start(async {
+                    let _ = index.search_with_paths(query, k, nprobe, &shards_dir).await;
+                    tx.send(()).unwrap();
+                });
+                rx.recv().unwrap();
                 let query_elapsed = query_start.elapsed();
 
                 query_count += 1;
@@ -271,11 +296,17 @@ pub fn recall_benchmark(
     query_vectors: &[Vec<f32>],
     dataset_vectors: &[(u64, Vec<f32>, u64)],
 ) -> Result<RecallResult, Box<dyn std::error::Error>> {
-    eprintln!("Running recall benchmark with {} queries", query_vectors.len());
+    eprintln!(
+        "Running recall benchmark with {} queries",
+        query_vectors.len()
+    );
 
     // Only run for small datasets
     if run.vector_count > 100_000 {
-        eprintln!("Skipping recall benchmark for large dataset ({} vectors)", run.vector_count);
+        eprintln!(
+            "Skipping recall benchmark for large dataset ({} vectors)",
+            run.vector_count
+        );
         return Ok(RecallResult { recall_at_k: 0.0 });
     }
 
@@ -293,7 +324,21 @@ pub fn recall_benchmark(
 
     for query in sample_queries {
         // Get IVF results
-        let ivf_results = index.search_with_paths(query, run.k, run.nprobe, &shards_dir_path)?;
+        let (tx, rx) = mpsc::channel();
+        tokio_uring::start(async {
+            match index
+                .search_with_paths(query, run.k, run.nprobe, &shards_dir_path)
+                .await
+            {
+                Ok(results) => {
+                    tx.send(Ok(results)).unwrap();
+                }
+                Err(e) => {
+                    tx.send(Err(e)).unwrap();
+                }
+            }
+        });
+        let ivf_results = rx.recv().unwrap()?;
         let ivf_ids: std::collections::HashSet<usize> =
             ivf_results.iter().map(|(id, _, _)| *id).collect();
 
@@ -308,11 +353,8 @@ pub fn recall_benchmark(
             .collect();
 
         distances.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-        let ground_truth_ids: std::collections::HashSet<usize> = distances
-            .iter()
-            .take(run.k)
-            .map(|(idx, _)| *idx)
-            .collect();
+        let ground_truth_ids: std::collections::HashSet<usize> =
+            distances.iter().take(run.k).map(|(idx, _)| *idx).collect();
 
         // Calculate recall@k: intersection size / k
         let intersection = ivf_ids.intersection(&ground_truth_ids).count();
@@ -351,4 +393,3 @@ pub fn generate_query_vectors(
 
     queries
 }
-
