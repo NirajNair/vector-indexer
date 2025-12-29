@@ -1,3 +1,4 @@
+use std::sync::mpsc;
 use vector_indexer::{SearchRequest, VectorIndexer, VectorIndexerConfig, VectorRecord};
 
 fn temp_subdir(name: &str) -> std::path::PathBuf {
@@ -70,14 +71,20 @@ fn build_writes_to_configured_dirs_and_load_uses_them() {
 
     // Load + search roundtrip
     let loaded = VectorIndexer::load(cfg).expect("load failed");
-    let results = loaded
-        .search(SearchRequest {
-            query: query_vec,
-            k: 10,
-            n_probe: 50,
-            include_vectors: false,
-        })
-        .expect("search failed");
+    let (tx, rx) = mpsc::channel();
+    tokio_uring::start(async {
+        let results = loaded
+            .search(SearchRequest {
+                query: query_vec,
+                k: 10,
+                n_probe: 50,
+                include_vectors: false,
+            })
+            .await
+            .expect("search failed");
+        tx.send(results).unwrap();
+    });
+    let results = rx.recv().unwrap();
 
     assert!(!results.is_empty());
     assert_eq!(results[0].external_id, query_external_id);
@@ -100,14 +107,20 @@ fn search_uses_config_defaults_when_request_is_none() {
         .build_from_records(records)
         .expect("build failed");
 
-    let results = indexer
-        .search(SearchRequest {
-            query: query_vec,
-            k: indexer.config().default_k,
-            n_probe: indexer.config().default_n_probe,
-            include_vectors: false,
-        })
-        .expect("search failed");
+    let (tx, rx) = mpsc::channel();
+    tokio_uring::start(async {
+        let results = indexer
+            .search(SearchRequest {
+                query: query_vec,
+                k: indexer.config().default_k,
+                n_probe: indexer.config().default_n_probe,
+                include_vectors: false,
+            })
+            .await
+            .expect("search failed");
+        tx.send(results).unwrap();
+    });
+    let results = rx.recv().unwrap();
 
     // default_k is 10; dataset is larger.
     assert_eq!(results.len(), 10);
@@ -129,14 +142,20 @@ fn search_overrides_k_and_n_probe_when_provided() {
         .build_from_records(records)
         .expect("build failed");
 
-    let results = indexer
-        .search(SearchRequest {
-            query: query_vec,
-            k: 5,
-            n_probe: 999,
-            include_vectors: false,
-        })
-        .expect("search failed");
+    let (tx, rx) = mpsc::channel();
+    tokio_uring::start(async {
+        let results = indexer
+            .search(SearchRequest {
+                query: query_vec,
+                k: 5,
+                n_probe: 999,
+                include_vectors: false,
+            })
+            .await
+            .expect("search failed");
+        tx.send(results).unwrap();
+    });
+    let results = rx.recv().unwrap();
 
     assert_eq!(results.len(), 5);
 }
@@ -159,14 +178,20 @@ fn search_clamps_to_max_k_and_max_n_probe() {
         .build_from_records(records)
         .expect("build failed");
 
-    let results = indexer
-        .search(SearchRequest {
-            query: query_vec,
-            k: 10,
-            n_probe: 999,
-            include_vectors: false,
-        })
-        .expect("search failed");
+    let (tx, rx) = mpsc::channel();
+    tokio_uring::start(async {
+        let results = indexer
+            .search(SearchRequest {
+                query: query_vec,
+                k: 10,
+                n_probe: 999,
+                include_vectors: false,
+            })
+            .await
+            .expect("search failed");
+        tx.send(results).unwrap();
+    });
+    let results = rx.recv().unwrap();
 
     assert_eq!(results.len(), 3);
 }
@@ -187,25 +212,37 @@ fn include_vectors_controls_payload() {
         .build_from_records(records)
         .expect("build failed");
 
-    let without = indexer
-        .search(SearchRequest {
-            query: query_vec.clone(),
-            k: 1,
-            n_probe: 10,
-            include_vectors: false,
-        })
-        .expect("search failed");
+    let (tx1, rx1) = mpsc::channel();
+    tokio_uring::start(async {
+        let results = indexer
+            .search(SearchRequest {
+                query: query_vec.clone(),
+                k: 1,
+                n_probe: 10,
+                include_vectors: false,
+            })
+            .await
+            .expect("search failed");
+        tx1.send(results).unwrap();
+    });
+    let without = rx1.recv().unwrap();
     assert_eq!(without.len(), 1);
     assert!(without[0].vector.is_none());
 
-    let with = indexer
-        .search(SearchRequest {
-            query: query_vec,
-            k: 1,
-            n_probe: 10,
-            include_vectors: true,
-        })
-        .expect("search failed");
+    let (tx2, rx2) = mpsc::channel();
+    tokio_uring::start(async {
+        let results = indexer
+            .search(SearchRequest {
+                query: query_vec,
+                k: 1,
+                n_probe: 10,
+                include_vectors: true,
+            })
+            .await
+            .expect("search failed");
+        tx2.send(results).unwrap();
+    });
+    let with = rx2.recv().unwrap();
     assert_eq!(with.len(), 1);
     assert!(with[0].vector.is_some());
     assert_eq!(with[0].vector.as_ref().unwrap().len(), dim as usize);
@@ -246,14 +283,19 @@ fn search_errors_on_query_dimension_mismatch() {
         .expect("build failed");
 
     // Wrong dimension (7 instead of 8)
-    assert!(indexer
-        .search(SearchRequest {
-            query: vec![0.0; 7],
-            k: 5,
-            n_probe: 5,
-            include_vectors: false,
-        })
-        .is_err());
+    let (tx, rx) = mpsc::channel();
+    tokio_uring::start(async {
+        let result = indexer
+            .search(SearchRequest {
+                query: vec![0.0; 7],
+                k: 5,
+                n_probe: 5,
+                include_vectors: false,
+            })
+            .await;
+        tx.send(result).unwrap();
+    });
+    assert!(rx.recv().unwrap().is_err());
 }
 
 #[test]
@@ -269,23 +311,33 @@ fn search_errors_on_k_or_n_probe_zero() {
         .build_from_records(records)
         .expect("build failed");
 
-    assert!(indexer
-        .search(SearchRequest {
-            query: query_vec.clone(),
-            k: 0,
-            n_probe: 5,
-            include_vectors: false,
-        })
-        .is_err());
+    let (tx1, rx1) = mpsc::channel();
+    tokio_uring::start(async {
+        let result = indexer
+            .search(SearchRequest {
+                query: query_vec.clone(),
+                k: 0,
+                n_probe: 5,
+                include_vectors: false,
+            })
+            .await;
+        tx1.send(result).unwrap();
+    });
+    assert!(rx1.recv().unwrap().is_err());
 
-    assert!(indexer
-        .search(SearchRequest {
-            query: query_vec,
-            k: 5,
-            n_probe: 0,
-            include_vectors: false,
-        })
-        .is_err());
+    let (tx2, rx2) = mpsc::channel();
+    tokio_uring::start(async {
+        let result = indexer
+            .search(SearchRequest {
+                query: query_vec,
+                k: 5,
+                n_probe: 0,
+                include_vectors: false,
+            })
+            .await;
+        tx2.send(result).unwrap();
+    });
+    assert!(rx2.recv().unwrap().is_err());
 }
 
 #[test]
@@ -313,14 +365,20 @@ fn build_from_vector_file_smoke_and_dimension_validation() {
         .build_from_vector_file(&vector_file)
         .expect("build_from_vector_file failed");
 
-    let results = indexer
-        .search(SearchRequest {
-            query: vec![0.0; dim as usize],
-            k: 5,
-            n_probe: 10,
-            include_vectors: false,
-        })
-        .expect("search failed");
+    let (tx, rx) = mpsc::channel();
+    tokio_uring::start(async {
+        let results = indexer
+            .search(SearchRequest {
+                query: vec![0.0; dim as usize],
+                k: 5,
+                n_probe: 10,
+                include_vectors: false,
+            })
+            .await
+            .expect("search failed");
+        tx.send(results).unwrap();
+    });
+    let results = rx.recv().unwrap();
     assert_eq!(results.len(), 5);
 
     // Dimension mismatch should error.

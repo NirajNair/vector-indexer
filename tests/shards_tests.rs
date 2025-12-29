@@ -1,6 +1,7 @@
 mod test_utils;
 
 use serial_test::serial;
+use std::sync::mpsc;
 use test_utils::*;
 use vector_indexer::ivf_index::{Centroid, IVFList};
 use vector_indexer::shards::Shard;
@@ -56,8 +57,14 @@ fn test_shard_roundtrip_single_centroid() {
     shard.save().expect("Failed to save shard");
 
     // Load using get_centroid_vectors
-    let loaded = Shard::get_centroid_vectors(shard_id.clone(), &[vector_id.clone() as u64])
-        .expect("Failed to load centroid vectors");
+    let (tx, rx) = mpsc::channel();
+    tokio_uring::start(async {
+        let result = Shard::get_centroid_vectors(shard_id.clone(), &[vector_id.clone() as u64])
+            .await
+            .expect("Failed to load centroid vectors");
+        tx.send(result).unwrap();
+    });
+    let loaded = rx.recv().unwrap();
 
     assert_eq!(loaded.len(), 1);
     let (loaded_id, loaded_centroid, loaded_vectors) = &loaded[0];
@@ -114,8 +121,14 @@ fn test_shard_roundtrip_multiple_centroids() {
     shard.save().expect("Failed to save shard");
 
     // Load all centroids
-    let loaded_centroids =
-        Shard::get_centroid_vectors(2001, &[10, 11, 12]).expect("Failed to load centroids");
+    let (tx, rx) = mpsc::channel();
+    tokio_uring::start(async {
+        let result = Shard::get_centroid_vectors(2001, &[10, 11, 12])
+            .await
+            .expect("Failed to load centroids");
+        tx.send(result).unwrap();
+    });
+    let loaded_centroids = rx.recv().unwrap();
 
     assert_eq!(loaded_centroids.len(), 3);
 
@@ -151,8 +164,14 @@ fn test_shard_selective_centroid_loading() {
     shard.save().expect("Failed to save shard");
 
     // Load only centroids 2, 5, 7
-    let loaded =
-        Shard::get_centroid_vectors(2002, &[2, 5, 7]).expect("Failed to load selective centroids");
+    let (tx, rx) = mpsc::channel();
+    tokio_uring::start(async {
+        let result = Shard::get_centroid_vectors(2002, &[2, 5, 7])
+            .await
+            .expect("Failed to load selective centroids");
+        tx.send(result).unwrap();
+    });
+    let loaded = rx.recv().unwrap();
 
     assert_eq!(loaded.len(), 3);
 
@@ -196,8 +215,14 @@ fn test_shard_with_empty_ivf_list() {
     let shard = Shard::new(3000, vec![centroid], vec![ivf_list], 3);
     shard.save().expect("Failed to save shard");
 
-    let loaded_centroids =
-        Shard::get_centroid_vectors(3000, &[0]).expect("Failed to load centroids");
+    let (tx, rx) = mpsc::channel();
+    tokio_uring::start(async {
+        let result = Shard::get_centroid_vectors(3000, &[0])
+            .await
+            .expect("Failed to load centroids");
+        tx.send(result).unwrap();
+    });
+    let loaded_centroids = rx.recv().unwrap();
 
     assert_eq!(loaded_centroids.len(), 1);
     // loaded_centroids[0] is (centroid_id, centroid_vector, vectors)
@@ -224,8 +249,14 @@ fn test_shard_with_high_dimensional_vectors() {
     shard.save().expect("Failed to save high-dimensional shard");
 
     // Load
-    let loaded =
-        Shard::get_centroid_vectors(2003, &[20]).expect("Failed to load high-dimensional shard");
+    let (tx, rx) = mpsc::channel();
+    tokio_uring::start(async {
+        let result = Shard::get_centroid_vectors(2003, &[20])
+            .await
+            .expect("Failed to load high-dimensional shard");
+        tx.send(result).unwrap();
+    });
+    let loaded = rx.recv().unwrap();
 
     assert_eq!(loaded.len(), 1);
     let (_id, loaded_centroid, loaded_vectors) = &loaded[0];
@@ -264,7 +295,14 @@ fn test_shard_with_many_vectors_per_centroid() {
     shard.save().expect("Failed to save large shard");
 
     // Load
-    let loaded = Shard::get_centroid_vectors(2100, &[100]).expect("Failed to load large shard");
+    let (tx, rx) = mpsc::channel();
+    tokio_uring::start(async {
+        let result = Shard::get_centroid_vectors(2100, &[100])
+            .await
+            .expect("Failed to load large shard");
+        tx.send(result).unwrap();
+    });
+    let loaded = rx.recv().unwrap();
 
     assert_eq!(loaded.len(), 1);
     let (_id, _centroid, loaded_vectors) = &loaded[0];
@@ -295,7 +333,14 @@ fn test_shard_with_single_vector() {
     let shard = Shard::new(2004, vec![centroid], vec![ivf_list], 2);
     shard.save().expect("Failed to save shard");
 
-    let loaded = Shard::get_centroid_vectors(2004, &[30]).expect("Failed to load shard");
+    let (tx, rx) = mpsc::channel();
+    tokio_uring::start(async {
+        let result = Shard::get_centroid_vectors(2004, &[30])
+            .await
+            .expect("Failed to load shard");
+        tx.send(result).unwrap();
+    });
+    let loaded = rx.recv().unwrap();
 
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].2.len(), 1); // One vector
@@ -328,7 +373,14 @@ fn test_vector_metadata_preserved() {
     shard.save().expect("Failed to save shard");
 
     // Load
-    let loaded = Shard::get_centroid_vectors(2200, &[200]).expect("Failed to load shard");
+    let (tx, rx) = mpsc::channel();
+    tokio_uring::start(async {
+        let result = Shard::get_centroid_vectors(2200, &[200])
+            .await
+            .expect("Failed to load shard");
+        tx.send(result).unwrap();
+    });
+    let loaded = rx.recv().unwrap();
 
     assert_eq!(loaded.len(), 1);
     let (_id, _centroid, loaded_vectors) = &loaded[0];
@@ -385,8 +437,14 @@ fn test_centroid_id_non_sequential() {
     shard.save().expect("Failed to save shard");
 
     // Load by non-sequential IDs
-    let loaded = Shard::get_centroid_vectors(2005, &[250, 500])
-        .expect("Failed to load non-sequential centroids");
+    let (tx, rx) = mpsc::channel();
+    tokio_uring::start(async {
+        let result = Shard::get_centroid_vectors(2005, &[250, 500])
+            .await
+            .expect("Failed to load non-sequential centroids");
+        tx.send(result).unwrap();
+    });
+    let loaded = rx.recv().unwrap();
 
     assert_eq!(loaded.len(), 2);
     let ids: Vec<u64> = loaded.iter().map(|(id, _, _)| *id).collect();
@@ -412,7 +470,14 @@ fn test_float_precision_preserved() {
     let shard = Shard::new(2006, vec![centroid], vec![ivf_list], 4);
     shard.save().expect("Failed to save shard");
 
-    let loaded = Shard::get_centroid_vectors(2006, &[40]).expect("Failed to load shard");
+    let (tx, rx) = mpsc::channel();
+    tokio_uring::start(async {
+        let result = Shard::get_centroid_vectors(2006, &[40])
+            .await
+            .expect("Failed to load shard");
+        tx.send(result).unwrap();
+    });
+    let loaded = rx.recv().unwrap();
 
     let (_id, loaded_centroid, loaded_vectors) = &loaded[0];
 
@@ -451,8 +516,14 @@ fn test_large_centroid_ids() {
     let shard = Shard::new(2007, vec![centroid], vec![ivf_list], 2);
     shard.save().expect("Failed to save shard with large ID");
 
-    let loaded =
-        Shard::get_centroid_vectors(2007, &[large_id]).expect("Failed to load shard with large ID");
+    let (tx, rx) = mpsc::channel();
+    tokio_uring::start(async {
+        let result = Shard::get_centroid_vectors(2007, &[large_id])
+            .await
+            .expect("Failed to load shard with large ID");
+        tx.send(result).unwrap();
+    });
+    let loaded = rx.recv().unwrap();
 
     assert_eq!(loaded.len(), 1);
     assert_eq!(loaded[0].0, large_id);
@@ -469,7 +540,12 @@ fn test_large_centroid_ids() {
 #[serial]
 fn test_load_nonexistent_shard() {
     // Test that loading a non-existent shard returns an error
-    let result = Shard::get_centroid_vectors(99999, &[0]);
+    let (tx, rx) = mpsc::channel();
+    tokio_uring::start(async {
+        let result = Shard::get_centroid_vectors(99999, &[0]).await;
+        tx.send(result).unwrap();
+    });
+    let result = rx.recv().unwrap();
 
     assert!(
         result.is_err(),
@@ -491,7 +567,12 @@ fn test_load_centroid_not_in_shard() {
     shard.save().expect("Failed to save shard");
 
     // Try to load centroid that doesn't exist
-    let result = Shard::get_centroid_vectors(2008, &[999]);
+    let (tx, rx) = mpsc::channel();
+    tokio_uring::start(async {
+        let result = Shard::get_centroid_vectors(2008, &[999]).await;
+        tx.send(result).unwrap();
+    });
+    let result = rx.recv().unwrap();
 
     assert!(
         result.is_err(),
@@ -531,7 +612,12 @@ fn test_corrupted_shard_header() {
     drop(file);
 
     // Try to load the corrupted shard
-    let result = Shard::get_centroid_vectors(2300, &[300]);
+    let (tx, rx) = mpsc::channel();
+    tokio_uring::start(async {
+        let result = Shard::get_centroid_vectors(2300, &[300]).await;
+        tx.send(result).unwrap();
+    });
+    let result = rx.recv().unwrap();
 
     // Should return error, not panic
     assert!(
@@ -605,7 +691,14 @@ fn test_multiple_saves_same_id() {
     shard2.save().expect("Second save failed");
 
     // Load and verify we get the second version
-    let loaded = Shard::get_centroid_vectors(2010, &[70]).expect("Failed to load");
+    let (tx, rx) = mpsc::channel();
+    tokio_uring::start(async {
+        let result = Shard::get_centroid_vectors(2010, &[70])
+            .await
+            .expect("Failed to load");
+        tx.send(result).unwrap();
+    });
+    let loaded = rx.recv().unwrap();
 
     let (_id, centroid, _vectors) = &loaded[0];
     assert!((centroid[0] - 3.0).abs() < 1e-5);
@@ -650,8 +743,14 @@ fn test_concurrent_shard_reads() {
     let handles: Vec<_> = (0..4)
         .map(|_| {
             thread::spawn(|| {
-                let loaded =
-                    Shard::get_centroid_vectors(2011, &[80]).expect("Failed to load in thread");
+                let (tx, rx) = mpsc::channel();
+                tokio_uring::start(async {
+                    let loaded = Shard::get_centroid_vectors(2011, &[80])
+                        .await
+                        .expect("Failed to load in thread");
+                    tx.send(loaded).unwrap();
+                });
+                let loaded = rx.recv().unwrap();
                 assert_eq!(loaded.len(), 1);
                 assert_eq!(loaded[0].2.len(), 10); // 10 vectors
             })

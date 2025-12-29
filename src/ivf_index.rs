@@ -2,6 +2,7 @@ use crate::kmeans::run_kmeans_mini_batch;
 use crate::shards::Shard;
 use crate::utils::{calculate_max_iterations, calculate_num_clusters, euclidean_distance_squared};
 use crate::vector_store::{Vector, VectorStore};
+use futures::future::join_all;
 use ndarray::{Array1, Axis};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
@@ -174,16 +175,17 @@ impl IvfIndex {
     }
 
     /// Search for k nearest neighbors
-    pub fn search(
+    pub async fn search(
         &self,
         query: &[f32],
         k: usize,
         n_probe: usize,
     ) -> Result<Vec<(usize, f32, Vec<f32>)>> {
         self.search_with_paths(query, k, n_probe, Path::new("shards"))
+            .await
     }
 
-    pub fn search_with_paths(
+    pub async fn search_with_paths(
         &self,
         query: &[f32],
         k: usize,
@@ -221,24 +223,35 @@ impl IvfIndex {
             .map(|&c_id| self.centroids_to_shard[c_id])
             .collect();
 
-        // Load shards and search vectors
+        let shard_futures: Vec<_> = shard_ids
+            .iter()
+            .map(|&shard_id| {
+                let relevant_centroids: Vec<u64> = probe_centroids
+                    .iter()
+                    .filter(|&&c_id| self.centroids_to_shard[c_id] == shard_id)
+                    .map(|&c_id| self.centroids[c_id].id as u64)
+                    .collect();
+
+                async move {
+                    Shard::get_centroid_vectors_from(
+                        shards_dir,
+                        shard_id as u64,
+                        &relevant_centroids,
+                    )
+                    .await
+                }
+            })
+            .collect();
+
+        // Wait for ALL shards to load concurrently
+        let shard_results = join_all(shard_futures).await;
+
+        // Process results
         let mut candidates = Vec::new();
-
-        for &shard_id in &shard_ids {
-            // Get centroids in this shard that we want to probe
-            // Use the actual centroid IDs, not the array indices
-            let relevant_centroids: Vec<u64> = probe_centroids
-                .iter()
-                .filter(|&&c_id| self.centroids_to_shard[c_id] == shard_id)
-                .map(|&c_id| self.centroids[c_id].id as u64)
-                .collect();
-
-            // Read vectors from shard
-            if let Ok(cluster_data) =
-                Shard::get_centroid_vectors_from(shards_dir, shard_id as u64, &relevant_centroids)
-            {
+        for result in shard_results {
+            if let Ok(cluster_data) = result {
                 for (_, _, vectors_with_metadata) in cluster_data {
-                    for (metadata, vector) in vectors_with_metadata {
+                    for (metadata, vector) in vectors_with_metadata.into_iter() {
                         let dist = euclidean_distance_squared(query, &vector);
                         candidates.push((metadata.external_id as usize, dist, vector));
                     }

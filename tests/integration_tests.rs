@@ -1,5 +1,6 @@
 mod test_utils;
 
+use std::sync::mpsc;
 use test_utils::*;
 use vector_indexer::ivf_index::{load_index, IvfIndex};
 use vector_indexer::shards::Shard;
@@ -48,7 +49,15 @@ fn test_full_pipeline_small_dataset() {
     let vectors = vector_store.get_vectors();
     let query = vectors.row(0).to_vec();
 
-    let results = loaded_index.search(&query, 10, 5).expect("Search failed");
+    let (tx, rx) = mpsc::channel();
+    tokio_uring::start(async {
+        let results = loaded_index
+            .search(&query, 10, 5)
+            .await
+            .expect("Search failed");
+        tx.send(results).unwrap();
+    });
+    let results = rx.recv().unwrap();
 
     assert!(!results.is_empty(), "Search should return results");
     assert!(results.len() <= 10, "Should return at most k results");
@@ -93,7 +102,15 @@ fn test_full_pipeline_with_persistence() {
     {
         let index = load_index().expect("Failed to load index");
 
-        let results = index.search(&query_vector, 10, 8).expect("Search failed");
+        let (tx, rx) = mpsc::channel();
+        tokio_uring::start(async {
+            let results = index
+                .search(&query_vector, 10, 8)
+                .await
+                .expect("Search failed");
+            tx.send(results).unwrap();
+        });
+        let results = rx.recv().unwrap();
 
         assert!(!results.is_empty(), "Search should return results");
         println!("Search returned {} results", results.len());
@@ -128,9 +145,15 @@ fn test_multiple_queries_consistency() {
     // Perform same search 5 times
     let mut all_results = Vec::new();
     for i in 0..5 {
-        let results = loaded_index
-            .search(&query, 15, 10)
-            .expect(&format!("Search {} failed", i + 1));
+        let (tx, rx) = mpsc::channel();
+        tokio_uring::start(async {
+            let results = loaded_index
+                .search(&query, 15, 10)
+                .await
+                .expect(&format!("Search {} failed", i + 1));
+            tx.send(results).unwrap();
+        });
+        let results = rx.recv().unwrap();
         all_results.push(results);
     }
 
@@ -179,7 +202,12 @@ fn test_search_result_validation() {
     let vectors = vector_store.get_vectors();
     let query = vectors.row(0).to_vec();
 
-    let results = index.search(&query, 20, 15).expect("Search failed");
+    let (tx, rx) = mpsc::channel();
+    tokio_uring::start(async {
+        let results = index.search(&query, 20, 15).await.expect("Search failed");
+        tx.send(results).unwrap();
+    });
+    let results = rx.recv().unwrap();
 
     // Validate results
     assert!(!results.is_empty(), "Should have results");
@@ -248,7 +276,15 @@ fn test_cross_module_data_flow() {
             .expect("Should find vector from cluster");
 
         let query = vectors.row(idx).to_vec();
-        let results = loaded_index.search(&query, 10, 10).expect("Search failed");
+        let (tx, rx) = mpsc::channel();
+        tokio_uring::start(async {
+            let results = loaded_index
+                .search(&query, 10, 10)
+                .await
+                .expect("Search failed");
+            tx.send(results).unwrap();
+        });
+        let results = rx.recv().unwrap();
 
         assert!(
             !results.is_empty(),
@@ -297,13 +333,29 @@ fn test_recall_quality_on_known_data() {
         let true_neighbors = find_true_nearest_neighbors(&query, &vectors, k);
 
         // Search with low n_probe
-        let results_low = loaded_index.search(&query, k, 5).expect("Search failed");
+        let (tx1, rx1) = mpsc::channel();
+        tokio_uring::start(async {
+            let results = loaded_index
+                .search(&query, k, 5)
+                .await
+                .expect("Search failed");
+            tx1.send(results).unwrap();
+        });
+        let results_low = rx1.recv().unwrap();
         let found_low: Vec<usize> = results_low.iter().map(|(id, _, _)| *id).collect();
         let recall_low = calculate_recall(&true_neighbors, &found_low);
         total_recall_low += recall_low;
 
         // Search with high n_probe
-        let results_high = loaded_index.search(&query, k, 15).expect("Search failed");
+        let (tx2, rx2) = mpsc::channel();
+        tokio_uring::start(async {
+            let results = loaded_index
+                .search(&query, k, 15)
+                .await
+                .expect("Search failed");
+            tx2.send(results).unwrap();
+        });
+        let results_high = rx2.recv().unwrap();
         let found_high: Vec<usize> = results_high.iter().map(|(id, _, _)| *id).collect();
         let recall_high = calculate_recall(&true_neighbors, &found_high);
         total_recall_high += recall_high;
@@ -459,7 +511,12 @@ fn test_missing_shards_handling() {
         let query = vec![1.0; 8];
 
         // Search might fail or return fewer results
-        let result = loaded_index.search(&query, 10, 5);
+        let (tx, rx) = mpsc::channel();
+        tokio_uring::start(async {
+            let result = loaded_index.search(&query, 10, 5).await;
+            tx.send(result).unwrap();
+        });
+        let result = rx.recv().unwrap();
 
         // Just verify it doesn't panic - behavior may vary
         match result {

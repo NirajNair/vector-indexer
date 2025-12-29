@@ -183,7 +183,7 @@ impl VectorIndexer {
         Ok(self)
     }
 
-    pub fn search(&self, req: SearchRequest) -> Result<Vec<SearchResult>> {
+    pub async fn search(&self, req: SearchRequest) -> Result<Vec<SearchResult>> {
         let k = req.k.min(self.cfg.max_k);
         let n_probe = req.n_probe.min(self.cfg.max_n_probe);
 
@@ -200,7 +200,8 @@ impl VectorIndexer {
 
         let raw = self
             .index
-            .search_with_paths(&req.query, k, n_probe, &self.cfg.shards_dir)?;
+            .search_with_paths(&req.query, k, n_probe, &self.cfg.shards_dir)
+            .await?;
 
         let results = raw
             .into_iter()

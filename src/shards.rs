@@ -7,6 +7,7 @@ use std::fs::{self, File};
 use std::io::{Error, ErrorKind, Result, Write};
 use std::mem;
 use std::path::Path;
+use tokio_uring::fs::File as AsyncFile;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -177,24 +178,46 @@ impl Shard {
 
     /// Read vectors from multiple centroids efficiently
     /// Returns: Vec of (centroid_id, centroid_vector, vectors_with_metadata)
-    pub fn get_centroid_vectors(
+    pub async fn get_centroid_vectors(
         shard_id: u64,
         centroid_ids: &[u64],
     ) -> Result<Vec<(u64, Vec<f32>, Vec<(VectorMeta, Vec<f32>)>)>> {
-        Self::get_centroid_vectors_from(Path::new("shards"), shard_id, centroid_ids)
+        Self::get_centroid_vectors_from(Path::new("shards"), shard_id, centroid_ids).await
     }
 
-    pub fn get_centroid_vectors_from(
+    pub async fn get_centroid_vectors_from(
         shards_dir: &Path,
         shard_id: u64,
         centroid_ids: &[u64],
     ) -> Result<Vec<(u64, Vec<f32>, Vec<(VectorMeta, Vec<f32>)>)>> {
-        let file = File::open(shards_dir.join(format!("shard_{}.bin", shard_id)))?;
-        let mmap = unsafe { Mmap::map(&file)? };
+        let file = AsyncFile::open(shards_dir.join(format!("shard_{}.bin", shard_id)))
+            .await
+            .map_err(|e| {
+                Error::new(
+                    ErrorKind::Other,
+                    format!("Failed to open shard_{}.bin file: {}", shard_id, e),
+                )
+            })?;
 
         // Read header
-        let (header, _) = ShardHeader::ref_from_prefix(&mmap[..mem::size_of::<ShardHeader>()])
-            .or_else(|_| Err(Error::new(ErrorKind::InvalidData, "Invalid shard header")))?;
+        let header_buffer = vec![0u8; mem::size_of::<ShardHeader>()];
+        let (result, header_buf) = file.read_at(header_buffer, 0).await;
+        result.map_err(|e| {
+            Error::new(
+                ErrorKind::Other,
+                format!(
+                    "Failed to read header of shard_{}.bin file: {}",
+                    shard_id, e
+                ),
+            )
+        })?;
+
+        let (header, _) = ShardHeader::ref_from_prefix(&header_buf).or_else(|_| {
+            Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("Invalid shard header, reading shard_{}.bin.", shard_id),
+            ))
+        })?;
 
         // Validate that the shard ID in the file matches the expected shard ID
         if header.shard_id != shard_id {
@@ -207,53 +230,66 @@ impl Shard {
             ));
         }
 
-        println!(
-            "Reading shard {}: {} centroids, {} dimensions",
-            header.shard_id, header.num_centroids, header.dimensions
-        );
-
         // Read index array
         let index_start = header.index_offset as usize;
         let index_entry_size = mem::size_of::<CentroidIndex>();
-        let mut index_entries = Vec::new();
 
+        let index_buffer = vec![0u8; header.num_centroids as usize * index_entry_size];
+        let (result, index_buf) = file.read_at(index_buffer, header.index_offset).await;
+        result.map_err(|e| {
+            Error::new(
+                ErrorKind::InvalidData,
+                format!("Failed to read index in shard_{}: {}", shard_id, e),
+            )
+        })?;
+
+        let mut index_entries = Vec::new();
         for i in 0..header.num_centroids as usize {
-            let offset = index_start + i * index_entry_size;
+            let offset = i * index_entry_size;
             let (entry, _) =
-                CentroidIndex::ref_from_prefix(&mmap[offset..offset + index_entry_size])
+                CentroidIndex::ref_from_prefix(&index_buf[offset..offset + index_entry_size])
                     .or_else(|_| Err(Error::new(ErrorKind::InvalidData, "Invalid index entry")))?;
             index_entries.push(*entry);
         }
 
-        // Find and read requested centroids
-        let mut results = Vec::new();
-
+        let mut read_futures = Vec::new();
         for &target_id in centroid_ids {
-            // Find index entry for this centroid
             let index_entry = index_entries
                 .iter()
                 .find(|e| e.centroid_id == target_id)
                 .ok_or_else(|| {
                     Error::new(
                         ErrorKind::NotFound,
-                        format!("Centroid {} not found in shard", target_id),
+                        format!("Centroid {} not found", target_id),
                     )
                 })?;
 
-            // Read cluster block
-            let block_start = index_entry.data_offset as usize;
-            let block_end = block_start + index_entry.data_size as usize;
-            let cluster_block = &mmap[block_start..block_end];
+            let data_size = index_entry.data_size as usize;
+            let data_offset = index_entry.data_offset;
+            let read_future = file.read_at(vec![0u8; data_size], data_offset);
 
-            // Parse cluster block
-            let dims = header.dimensions as usize;
-            let centroid_size = dims * mem::size_of::<f32>();
-            let centroid_padding = (8 - (centroid_size % 8)) % 8;
-            let vector_meta_size = mem::size_of::<VectorMeta>();
-            let vector_data_size = dims * mem::size_of::<f32>();
-            let vector_padding = (8 - (vector_data_size % 8)) % 8;
+            read_futures.push((target_id, index_entry.clone(), read_future));
+        }
 
-            // 1. Read centroid vector
+        // Find and read requested centroids
+        let mut results = Vec::new();
+        let dims = header.dimensions as usize;
+        let centroid_size = dims * mem::size_of::<f32>();
+        let centroid_padding = (8 - (centroid_size % 8)) % 8;
+        let vector_meta_size = mem::size_of::<VectorMeta>();
+        let vector_data_size = dims * mem::size_of::<f32>();
+        let vector_padding = (8 - (vector_data_size % 8)) % 8;
+
+        for (target_id, index_entry, read_future) in read_futures {
+            let (result, block_buf) = read_future.await;
+            result.map_err(|e| {
+                Error::new(ErrorKind::Other, format!("Failed to read cluster: {}", e))
+            })?;
+
+            // Parse cluster block (same as sync)
+            let cluster_block = &block_buf[..];
+
+            // Read centroid vector
             let centroid_bytes = &cluster_block[..centroid_size];
             let centroid_vector = <[f32]>::ref_from_bytes(centroid_bytes)
                 .or_else(|_| {
@@ -264,7 +300,7 @@ impl Shard {
                 })?
                 .to_vec();
 
-            // 2. Read vectors with metadata
+            // Read vectors with metadata
             let mut vectors = Vec::new();
             let mut offset = centroid_size + centroid_padding;
 
@@ -307,10 +343,6 @@ impl Shard {
             }
 
             results.push((target_id, centroid_vector, vectors));
-            println!(
-                "Loaded centroid {}: {} vectors",
-                target_id, index_entry.num_vectors
-            );
         }
 
         Ok(results)
@@ -353,8 +385,9 @@ impl Shard {
         }
 
         // Read all centroids using their actual IDs
-        let cluster_data =
-            Self::get_centroid_vectors_from(shards_dir, shard_id, &all_centroid_ids)?;
+        let cluster_data = tokio_uring::start(async {
+            Self::get_centroid_vectors_from(shards_dir, shard_id, &all_centroid_ids).await
+        })?;
 
         // Reconstruct Shard structure
         let mut centroids = Vec::new();
