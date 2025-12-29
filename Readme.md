@@ -1,6 +1,6 @@
 # vector_indexer
 
-A high-performance vector indexing engine written in Rust. Implements an **Inverted File (IVF)** index with **two-level clustering**, **memory-mapped storage**, and **SIMD-optimized distance computation**.
+A vector indexing engine written in Rust. Implements an **Inverted File (IVF)** index with **two-level clustering**, **async I/O with tokio-uring**, and **SIMD-optimized distance computation**.
 
 Designed as a lightweight, standalone component for building and experimenting with **approximate nearest neighbor (ANN)** search algorithms which can serve as the computational core for retrieval systems.
 
@@ -9,10 +9,11 @@ Designed as a lightweight, standalone component for building and experimenting w
 ## Key Features
 
 - **Two-level clustering architecture** — IVF clusters organized into shards via super-centroids for scalable distribution
-- **Mini-batch K-Means** with early convergence detection and parallel execution using Rayon
-- **Memory-mapped I/O** for efficient disk access with zero-copy deserialization
+- **Async I/O with tokio-uring** — asynchronous disk I/O for efficient shard loading and search operations
+- **Mini-batch K-Means** with early convergence detection, parallel execution using Rayon, and deterministic initialization
+- **Hierarchical assignment** — Optimized point-to-centroid assignment for large cluster counts (k > 100) using meta-clustering
 - **Custom binary storage format** with structured headers, indices, and cluster blocks
-- **SIMD-accelerated distance calculations** using the `wide` crate
+- **SIMD-accelerated distance calculations** using the `wide` crate for vectorized Euclidean distance computation
 
 ## Commands
 
