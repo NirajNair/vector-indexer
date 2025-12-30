@@ -23,12 +23,6 @@ Designed as a lightweight, standalone component for building and experimenting w
 docker-compose run --rm app cargo test --features internal_tests
 ```
 
-### Run benchmarks (requires bench.yaml config file)
-
-```bash
-docker-compose run --rm app cargo run --release --bin bench --features internal_tests -- bench.yaml
-```
-
 ### Interactive shell
 
 ```bash
@@ -45,4 +39,23 @@ docker-compose run --rm app cargo test --features internal_tests test_name
 
 ```bash
 docker-compose run --rm app cargo build --release
+```
+
+### Build and run the benchmark
+
+```bash
+docker compose -f docker-compose.bench.yml build
+docker compose -f docker-compose.bench.yml run --rm bench
+```
+
+#### Compare with Faiss
+
+```bash
+BACKEND=both docker compose -f docker-compose.bench.yml run --rm bench
+```
+
+#### Custom parameters
+
+```bash
+N=50000 D=64 docker compose -f docker-compose.bench.yml run --rm bench
 ```

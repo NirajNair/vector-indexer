@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "bindings/python"]
+
 [package]
 name = "vector_indexer"
 version = "0.1.0"

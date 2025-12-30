@@ -28,6 +28,7 @@ shards
 bench_index
 bench_data
 
+faiss_bench_results
 bench_results.*
 
 .DS_Store

@@ -1,0 +1,16 @@
+[build-system]
+requires = ["maturin>=1.4,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "vector_indexer_py"
+version = "0.1.0"
+description = "Python bindings for vector_indexer (IVF index with async search)"
+requires-python = ">=3.8"
+dependencies = ["numpy"]
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+python-source = "python"
+module-name = "vector_indexer_py"
+

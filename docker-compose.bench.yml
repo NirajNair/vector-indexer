@@ -1,0 +1,32 @@
+# Docker Compose for running faiss-bench benchmarks
+#
+# Official Faiss benchmark (robust, multi-run timing with min_test_duration):
+#   docker compose -f docker-compose.bench.yml run --rm bench
+#
+# With custom parameters:
+#   N=100000 K=100 MIN_TEST_DURATION=5.0 docker compose -f docker-compose.bench.yml run --rm bench
+#
+# Compare with Faiss:
+#   BACKEND=both docker compose -f docker-compose.bench.yml run --rm bench
+
+services:
+  # Faiss benchmark (robust, multi-run timing)
+  bench:
+    build:
+      context: .
+      dockerfile: Dockerfile.bench
+    volumes:
+      - ./faiss_bench_results:/workspace/faiss_bench_results
+    environment:
+      - N=${N:-100000}
+      - D=${D:-128}
+      - NQ=${NQ:-1000}
+      - K=${K:-100} # Default 100 for R@1, R@10, R@100
+      - NPROBES=${NPROBES:-1,2,4,8,16,32,64}
+      - MIN_TEST_DURATION=${MIN_TEST_DURATION:-3.0}
+      - SEED=${SEED:-42}
+      - OUTPUT_DIR=/workspace/faiss_bench_results
+      - WORK_DIR=/tmp/vector_indexer_bench
+      - BACKEND=${BACKEND:-both}
+    command: ["/workspace/scripts/run_faiss_bench.sh"]
+    # privileged: true  # Uncomment for io_uring permission errors
