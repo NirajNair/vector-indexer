@@ -17,10 +17,18 @@ Uses the official Faiss eval_setting() methodology:
 - Averages timing across multiple runs
 - Reports recalls at rank 1, 10, 100
 
-Usage:
+Usage (synthetic dataset - default):
     python bench_all_ivf.py --backend vector_indexer --n 100000 --d 128 --k 100
     python bench_all_ivf.py --backend faiss --n 100000 --d 128 --k 100
     python bench_all_ivf.py --backend both --n 100000 --d 128 --k 100
+
+Usage (local dataset files):
+    # NumPy .npy arrays
+    python bench_all_ivf.py --dataset local_npy --xb-path data/sift1m/xb.npy --xq-path data/sift1m/xq.npy --n 100000 --nq 1000 --k 100
+    python bench_all_ivf.py --dataset local_npy --xb-path data/sift1m/xb.npy --xq-path data/sift1m/xq.npy --gt-path data/sift1m/gt.npy --n 100000
+
+    # Faiss fvecs/ivecs binaries (SIFT1M files)
+    python bench_all_ivf.py --dataset local_npy --xb-path data/sift_base.fvecs --xq-path data/sift_query.fvecs --gt-path data/sift_groundtruth.ivecs --n 100000 --nq 1000 --k 100
 """
 
 import argparse
@@ -69,6 +77,201 @@ def generate_synthetic_data(
     gt_index.add(xb)
     _, gt = gt_index.search(xq, k)
 
+    return xb, xq, gt
+
+
+# ==============================================================================
+# Local Dataset Loading (.npy or .fvecs/.ivecs files)
+# ==============================================================================
+
+
+def _read_fvecs(path: str, max_rows: Optional[int] = None) -> np.ndarray:
+    """
+    Read a Faiss .fvecs file.
+
+    Format: repeated records of [int32 dim][float32 x dim].
+
+    Returns float32 array of shape (n, d).
+    """
+    # Read dim from the first record
+    with open(path, "rb") as f:
+        header = np.fromfile(f, dtype=np.int32, count=1)
+        if header.size != 1:
+            raise ValueError(f"Empty or invalid fvecs file: {path}")
+        d = int(header[0])
+
+    # Each record is (d + 1) int32 values when viewed as int32
+    count = None
+    if max_rows is not None:
+        count = int(max_rows) * (d + 1)
+
+    a = np.fromfile(path, dtype=np.int32, count=count)
+    if a.size % (d + 1) != 0:
+        raise ValueError(
+            f"Invalid fvecs file (size not multiple of d+1): {path} (d={d}, ints={a.size})"
+        )
+    a = a.reshape(-1, d + 1)
+    vectors = a[:, 1:].view(np.float32)
+    return np.ascontiguousarray(vectors)
+
+
+def _read_ivecs(path: str, max_rows: Optional[int] = None) -> np.ndarray:
+    """
+    Read a Faiss .ivecs file.
+
+    Format: repeated records of [int32 k][int32 x k].
+
+    Returns int64 array of shape (n, k).
+    """
+    with open(path, "rb") as f:
+        header = np.fromfile(f, dtype=np.int32, count=1)
+        if header.size != 1:
+            raise ValueError(f"Empty or invalid ivecs file: {path}")
+        k = int(header[0])
+
+    count = None
+    if max_rows is not None:
+        count = int(max_rows) * (k + 1)
+
+    a = np.fromfile(path, dtype=np.int32, count=count)
+    if a.size % (k + 1) != 0:
+        raise ValueError(
+            f"Invalid ivecs file (size not multiple of k+1): {path} (k={k}, ints={a.size})"
+        )
+    a = a.reshape(-1, k + 1)
+    ids = a[:, 1:]
+    return np.ascontiguousarray(ids.astype(np.int64, copy=False))
+
+
+def _load_vectors(path: str, max_rows: Optional[int] = None) -> np.ndarray:
+    """Load vectors from .npy or .fvecs."""
+    if path.endswith(".npy"):
+        arr = np.load(path, mmap_mode="r")
+        if max_rows is not None:
+            arr = arr[:max_rows]
+        arr = np.asarray(arr, dtype=np.float32)
+        return np.ascontiguousarray(arr)
+    if path.endswith(".fvecs"):
+        return _read_fvecs(path, max_rows=max_rows)
+    raise ValueError(f"Unsupported vector file type (expected .npy or .fvecs): {path}")
+
+
+def _load_groundtruth(path: str, max_rows: Optional[int] = None) -> np.ndarray:
+    """Load ground truth from .npy or .ivecs."""
+    if path.endswith(".npy"):
+        arr = np.load(path, mmap_mode="r")
+        if max_rows is not None:
+            arr = arr[:max_rows]
+        arr = np.asarray(arr, dtype=np.int64)
+        return np.ascontiguousarray(arr)
+    if path.endswith(".ivecs"):
+        return _read_ivecs(path, max_rows=max_rows)
+    raise ValueError(
+        f"Unsupported ground truth file type (expected .npy or .ivecs): {path}"
+    )
+
+
+def load_local_npy_data(
+    xb_path: str,
+    xq_path: str,
+    gt_path: Optional[str],
+    n: int,
+    nq: int,
+    k: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Load dataset from local files (.npy or Faiss .fvecs/.ivecs).
+
+    Arrays are sliced to (n, nq, k) to allow using a subset of larger datasets.
+    If gt_path is not provided, ground truth is computed using Faiss FlatL2.
+
+    Args:
+        xb_path: Path to database vectors (.npy or .fvecs)
+        xq_path: Path to query vectors (.npy or .fvecs)
+        gt_path: Optional path to ground truth indices (.npy or .ivecs)
+        n: Max number of database vectors to use (slice xb[:n])
+        nq: Max number of query vectors to use (slice xq[:nq])
+        k: Number of neighbors (used to slice gt and/or compute it)
+
+    Returns:
+        xb: Database vectors, shape (min(n, N), d)
+        xq: Query vectors, shape (min(nq, NQ), d)
+        gt: Ground truth indices, shape (nq_actual, k)
+    """
+    print("Loading local dataset files:")
+    print(f"  xb: {xb_path}")
+    print(f"  xq: {xq_path}")
+    print(f"  gt: {gt_path if gt_path else '(will compute with FlatL2)'}")
+
+    # Load database vectors
+    xb = _load_vectors(xb_path, max_rows=n)
+
+    # Load query vectors
+    xq = _load_vectors(xq_path, max_rows=nq)
+
+    # Validate dimensions match
+    if xb.shape[1] != xq.shape[1]:
+        raise ValueError(
+            f"Dimension mismatch: xb has d={xb.shape[1]}, xq has d={xq.shape[1]}"
+        )
+
+    d = xb.shape[1]
+    print(f"  Loaded xb: {xb.shape}, xq: {xq.shape}, d={d}")
+
+    # Actual sizes (load already capped by max_rows, but keep consistent)
+    n_actual = xb.shape[0]
+    nq_actual = xq.shape[0]
+
+    # Load or compute ground truth
+    gt = None
+    if gt_path:
+        gt = _load_groundtruth(gt_path, max_rows=nq_actual)
+        print(f"  Loaded gt: {gt.shape} (from {gt_path})")
+        sys.stdout.flush()
+
+        # Slice gt to match nq and k
+        if gt.shape[1] < k:
+            raise ValueError(
+                f"Ground truth has only {gt.shape[1]} neighbors per query, but k={k} was requested"
+            )
+        gt = gt[:nq_actual, :k]
+        print(f"  Sliced gt to: {gt.shape}")
+
+        # Validate gt indices are within bounds of sliced xb
+        max_idx = int(gt.max()) if gt.size else -1
+        invalid_count = int((gt >= n_actual).sum())
+        invalid_pct = 100.0 * invalid_count / gt.size if gt.size else 0
+
+        print(
+            f"  GT index range: [{gt.min()}, {max_idx}], invalid (>={n_actual}): {invalid_count}/{gt.size} ({invalid_pct:.1f}%)"
+        )
+        sys.stdout.flush()
+
+        if max_idx >= n_actual:
+            print(
+                f"  WARNING: gt contains indices up to {max_idx} but xb has only {n_actual} vectors."
+            )
+            print("  Recomputing ground truth for sliced dataset...")
+            sys.stdout.flush()
+            gt = None
+
+    if gt is None:
+        # Compute ground truth using Faiss brute force
+        if faiss is None:
+            raise RuntimeError("Faiss required for ground truth computation")
+
+        print(
+            f"  Computing ground truth with Faiss FlatL2 (n={n_actual}, nq={nq_actual}, k={k})..."
+        )
+        sys.stdout.flush()
+        gt_index = faiss.IndexFlatL2(d)
+        gt_index.add(xb)
+        _, gt = gt_index.search(xq, k)
+        print(f"  Ground truth computed. GT index range: [{gt.min()}, {gt.max()}]")
+        sys.stdout.flush()
+
+    print(f"  Dataset ready: xb={xb.shape}, xq={xq.shape}, gt={gt.shape}")
+    sys.stdout.flush()
     return xb, xq, gt
 
 
@@ -130,12 +333,19 @@ def eval_setting(index, xq, gt, k, inter, min_time):
         res["inter_measure"] = inter_measure
     else:
         # Recall at ranks 1, 10, 100
+        # Recall@k = fraction of queries where true NN (gt[:,0]) appears in top-k results
         res["recalls"] = {}
+        true_nn = gt[
+            :, 0:1
+        ]  # Shape: (nq, 1) - the true nearest neighbor for each query
         for rank in [1, 10, 100]:
             if rank > k:
                 continue
-            # Official Faiss recall: check if true NN (gt[:, :1]) is in top-rank results
-            recall = (I[:, :rank] == gt[:, :1]).sum() / float(nq)
+            # Check if true NN appears anywhere in top-rank results for each query
+            # Broadcasting: I[:, :rank] is (nq, rank), true_nn is (nq, 1)
+            # Result is (nq, rank), then .any(axis=1) gives (nq,) bool array
+            matches = (I[:, :rank] == true_nn).any(axis=1)
+            recall = matches.sum() / float(nq)
             print("R@%-3d=%.4f" % (rank, recall), end="  ")
             res["recalls"][rank] = recall
 
@@ -343,9 +553,38 @@ def main():
         help="Backend to benchmark",
     )
 
+    # Dataset source selection
+    parser.add_argument(
+        "--dataset",
+        choices=["synthetic", "local_npy"],
+        default="synthetic",
+        help="Dataset source: 'synthetic' (generate random data) or 'local_npy' (load from .npy files)",
+    )
+    parser.add_argument(
+        "--xb-path",
+        type=str,
+        default=None,
+        help="Path to database vectors .npy file (required for local_npy dataset)",
+    )
+    parser.add_argument(
+        "--xq-path",
+        type=str,
+        default=None,
+        help="Path to query vectors .npy file (required for local_npy dataset)",
+    )
+    parser.add_argument(
+        "--gt-path",
+        type=str,
+        default=None,
+        help="Path to ground truth indices .npy file (optional; if omitted, computed with FlatL2)",
+    )
+
     # Dataset parameters
     parser.add_argument(
-        "--n", type=int, default=100000, help="Number of database vectors"
+        "--n",
+        type=int,
+        default=100000,
+        help="Number of database vectors (or max to use from local dataset)",
     )
     parser.add_argument("--d", type=int, default=128, help="Vector dimension")
     parser.add_argument("--nq", type=int, default=1000, help="Number of query vectors")
@@ -404,6 +643,13 @@ def main():
 
     args = parser.parse_args()
 
+    # Validate local_npy arguments
+    if args.dataset == "local_npy":
+        if not args.xb_path:
+            parser.error("--xb-path is required when --dataset=local_npy")
+        if not args.xq_path:
+            parser.error("--xq-path is required when --dataset=local_npy")
+
     nprobes = [int(x.strip()) for x in args.nprobes.split(",")]
     output_dir = Path(args.output_dir)
 
@@ -411,31 +657,48 @@ def main():
     print("IVF Benchmark (Official Faiss Methodology)")
     print("=" * 60)
     print(f"Backend: {args.backend}")
-    print(f"Dataset: n={args.n}, d={args.d}, nq={args.nq}, k={args.k}")
+    print(f"Dataset source: {args.dataset}")
+    if args.dataset == "synthetic":
+        print(f"Dataset params: n={args.n}, d={args.d}, nq={args.nq}, k={args.k}")
+    else:
+        print(f"Dataset params: n<={args.n}, nq<={args.nq}, k={args.k}")
+        print(f"  xb: {args.xb_path}")
+        print(f"  xq: {args.xq_path}")
+        if args.gt_path:
+            print(f"  gt: {args.gt_path}")
     print(f"nprobes: {nprobes}")
     print(f"min_test_duration: {args.min_test_duration}s")
     print("=" * 60)
 
-    # Generate synthetic data
-    xb, xq, gt = generate_synthetic_data(args.n, args.d, args.nq, args.k, args.seed)
+    # Load or generate dataset
+    if args.dataset == "synthetic":
+        xb, xq, gt = generate_synthetic_data(args.n, args.d, args.nq, args.k, args.seed)
+    else:  # local_npy
+        xb, xq, gt = load_local_npy_data(
+            args.xb_path, args.xq_path, args.gt_path, args.n, args.nq, args.k
+        )
+
     print(f"Dataset ready: xb={xb.shape}, xq={xq.shape}, gt={gt.shape}")
 
     all_results = []
+
+    # Use actual n from loaded data (may be smaller than args.n for local datasets)
+    n_actual = xb.shape[0]
 
     # Compute nlist if not provided
     if args.nlist is None:
         try:
             import vector_indexer_py
 
-            nlist = vector_indexer_py.suggest_nlist(args.n)
+            nlist = vector_indexer_py.suggest_nlist(n_actual)
         except ImportError:
             # Fallback formula
-            if args.n < 10_000:
-                nlist = int(args.n**0.5)
-            elif args.n < 100_000:
-                nlist = int(2 * (args.n**0.5))
+            if n_actual < 10_000:
+                nlist = int(n_actual**0.5)
+            elif n_actual < 100_000:
+                nlist = int(2 * (n_actual**0.5))
             else:
-                nlist = int(4 * (args.n**0.5))
+                nlist = int(4 * (n_actual**0.5))
     else:
         nlist = args.nlist
 

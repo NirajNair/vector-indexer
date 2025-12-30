@@ -31,4 +31,7 @@ bench_data
 faiss_bench_results
 bench_results.*
 
+# Local datasets (e.g., SIFT1M .npy files)
+data/
+
 .DS_Store

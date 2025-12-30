@@ -59,9 +59,25 @@ OUTPUT_DIR=${OUTPUT_DIR:-"/workspace/faiss_bench_results"}
 WORK_DIR=${WORK_DIR:-"/tmp/vector_indexer_bench"}
 BACKEND=${BACKEND:-"both"}
 
+# Dataset source: synthetic (default) or local_npy
+DATASET=${DATASET:-"synthetic"}
+XB_PATH=${XB_PATH:-""}
+XQ_PATH=${XQ_PATH:-""}
+GT_PATH=${GT_PATH:-""}
+
 echo ""
 echo "Benchmark configuration (Official Faiss Methodology):"
 echo "  Backend: $BACKEND"
+echo "  Dataset: $DATASET"
+if [ "$DATASET" = "local_npy" ]; then
+    echo "  XB_PATH: $XB_PATH"
+    echo "  XQ_PATH: $XQ_PATH"
+    if [ -n "$GT_PATH" ]; then
+        echo "  GT_PATH: $GT_PATH"
+    else
+        echo "  GT_PATH: (will compute with FlatL2)"
+    fi
+fi
 echo "  N: $N"
 echo "  D: $D"
 echo "  NQ: $NQ"
@@ -80,12 +96,26 @@ mkdir -p "$WORK_DIR"
 # Add the benchmark directory to Python path
 export PYTHONPATH="/workspace/bench/faiss_bench_official:$PYTHONPATH"
 
+# Build dataset arguments
+DATASET_ARGS="--dataset $DATASET"
+if [ "$DATASET" = "local_npy" ]; then
+    if [ -z "$XB_PATH" ] || [ -z "$XQ_PATH" ]; then
+        echo -e "${RED}ERROR: XB_PATH and XQ_PATH are required when DATASET=local_npy${NC}"
+        exit 1
+    fi
+    DATASET_ARGS="$DATASET_ARGS --xb-path $XB_PATH --xq-path $XQ_PATH"
+    if [ -n "$GT_PATH" ]; then
+        DATASET_ARGS="$DATASET_ARGS --gt-path $GT_PATH"
+    fi
+fi
+
 # Run the benchmark
 echo "Starting official Faiss-style benchmark..."
 echo ""
 
 python3 /workspace/bench/faiss_bench_official/bench_all_ivf.py \
     --backend "$BACKEND" \
+    $DATASET_ARGS \
     --n "$N" \
     --d "$D" \
     --nq "$NQ" \

@@ -8,6 +8,12 @@
 #
 # Compare with Faiss:
 #   BACKEND=both docker compose -f docker-compose.bench.yml run --rm bench
+#
+# Use local SIFT1M dataset:
+# - If you have NumPy arrays:
+#   DATASET=local_npy XB_PATH=/workspace/data/sift1m/xb.npy XQ_PATH=/workspace/data/sift1m/xq.npy N=100000 docker compose -f docker-compose.bench.yml run --rm bench
+# - If you have the standard Faiss SIFT files (fvecs/ivecs) in ./data:
+#   DATASET=local_npy XB_PATH=/workspace/data/sift_base.fvecs XQ_PATH=/workspace/data/sift_query.fvecs GT_PATH=/workspace/data/sift_groundtruth.ivecs N=100000 docker compose -f docker-compose.bench.yml run --rm bench
 
 services:
   # Faiss benchmark (robust, multi-run timing)
@@ -17,16 +23,22 @@ services:
       dockerfile: Dockerfile.bench
     volumes:
       - ./faiss_bench_results:/workspace/faiss_bench_results
+      - ./data:/workspace/data:ro # Local datasets (e.g., .npy or .fvecs/.ivecs)
     environment:
       - N=${N:-100000}
       - D=${D:-128}
       - NQ=${NQ:-1000}
       - K=${K:-100} # Default 100 for R@1, R@10, R@100
       - NPROBES=${NPROBES:-1,2,4,8,16,32,64}
-      - MIN_TEST_DURATION=${MIN_TEST_DURATION:-3.0}
+      - MIN_TEST_DURATION=${MIN_TEST_DURATION:-10.0}
       - SEED=${SEED:-42}
       - OUTPUT_DIR=/workspace/faiss_bench_results
       - WORK_DIR=/tmp/vector_indexer_bench
       - BACKEND=${BACKEND:-both}
+      # Dataset source: synthetic (default) or local_npy
+      - DATASET=${DATASET:-synthetic}
+      - XB_PATH=${XB_PATH:-}
+      - XQ_PATH=${XQ_PATH:-}
+      - GT_PATH=${GT_PATH:-}
     command: ["/workspace/scripts/run_faiss_bench.sh"]
     # privileged: true  # Uncomment for io_uring permission errors
